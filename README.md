@@ -18,6 +18,22 @@ pip install -e ".[dev]"
 
 ## Usage
 
+## Simulation Demo
+
+Run:
+
+```bash
+python examples/simulation/main.py
+```
+
+The simulation uses the real `TieredCache` implementation to demonstrate:
+
+- cache hits and misses
+- TTL expiry
+- stampede protection under concurrency
+- graceful degradation with stale serving
+- event observability through real cache event listeners
+
 ### Basic Usage (code example)
 
 ```python
