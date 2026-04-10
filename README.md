@@ -295,7 +295,7 @@ GitHub Actions runs [tests.yml](./.github/workflows/tests.yml):
 
 ## How I Used AI
 
-AI helped accelerate scaffolding, draft documentation, and generate an initial pass at the tests and examples. I still reviewed the concurrency behavior, refined the stale-serving path, validated the public API against the actual implementation, and removed features or docs that added more surface area than value for the submission.
+AI was used as an implementation and editing assistant, not as an autopilot. It helped draft code, generate test scaffolding, rewrite documentation, and speed up iterative cleanup, but I still made the final decisions around architecture, scope control, naming, and what to keep or remove so the submission stayed aligned with the assignment rather than becoming overly broad.
 
 ## Visual Demo
 
