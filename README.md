@@ -28,6 +28,13 @@ pip install -e ".[demo]"
 pip install -e ".[dev]"
 ```
 
+## Prerequisites
+
+- Python 3.9 or newer
+- `pip`
+- Redis for the production/backend path and integration tests
+- Optional: Docker and Docker Compose for local Redis-backed testing
+
 ## Usage
 
 ### Cache-Aside
@@ -107,41 +114,6 @@ result = await cache.getOrSet(
 | `2h` | 2 hours | `7200.0` |
 | `1d` | 1 day | `86400.0` |
 
-### Event Listening
-
-```python
-from shipsy_cache import RedisL2, TieredCache
-
-l2 = RedisL2(
-    host="localhost",
-    port=6379,
-    db=0,
-    password=None,
-    ssl=False,
-    namespace="events_backend",
-    socket_timeout=2.0,
-)
-cache = TieredCache(
-    l2_backend=l2,
-    l1_max_size=1000,
-    default_ttl="5m",
-    grace_period="30s",
-    namespace="events-demo",
-    event_emitter=None,
-)
-
-
-def listener(payload: dict) -> None:
-    print(payload)
-
-
-cache.on("cache:hit", listener)
-cache.on("cache:miss", listener)
-cache.on("cache:set", listener)
-cache.on("cache:stale-served", listener)
-cache.on("cache:invalidate", listener)
-```
-
 ## Running Tests
 
 ### Unit Tests (no dependencies needed)
@@ -162,6 +134,30 @@ pytest tests/integration/ -v
 ```bash
 docker compose -f docker/docker-compose.yml up --build --abort-on-container-exit
 ```
+
+## Operations Notes
+
+### Redis Environment Variables
+
+| Variable | Used By | Default | Purpose |
+| --- | --- | --- | --- |
+| `REDIS_HOST` | `RedisL2` | `localhost` | Redis hostname |
+| `REDIS_PORT` | `RedisL2` | `6379` | Redis port |
+| `REDIS_DB` | `RedisL2` | `0` | Redis database index |
+| `REDIS_PASSWORD` | `RedisL2` | unset | Redis password |
+
+### Troubleshooting
+
+- `L2UnavailableError`: Check Redis reachability, credentials, and whether the target Redis instance is healthy.
+- Cache entries expiring too quickly: Verify TTL units. `5m` means 5 minutes, while `5` means 5 seconds.
+- Integration tests being skipped: Ensure `REDIS_HOST` is set before running `pytest tests/integration/`.
+
+### CI/CD
+
+GitHub Actions runs the workflow in [tests.yml](./.github/workflows/tests.yml):
+
+- unit tests on Python 3.10
+- Redis-backed integration tests on Python 3.10 using a service container
 
 ## API Reference
 
@@ -212,9 +208,31 @@ Returns `{"l1": {"size": int, "max_size": int}, "namespace": str}`.
 
 L1 is a bounded `OrderedDict`-backed LRU with lazy TTL eviction and `threading.Lock` protection for sync-safe access.
 
+Fresh entries are tracked with:
+
+```text
+{
+  "value": Any,
+  "expire_at": float,
+  "created_at": float
+}
+```
+
+This gives the library bounded memory usage, fast process-local reads, and enough metadata to support stale serving during the grace window.
+
 ### L2 — Pluggable Backend
 
 L2 is an async interface. This library currently ships with `RedisL2` as the working shared backend implementation.
+
+The backend contract is:
+
+- `get(key)`
+- `set(key, value, ttl_seconds)`
+- `delete(key)`
+- `clear()`
+- `ping()`
+
+`RedisL2` uses `redis.asyncio`, JSON serialization, native Redis expiration, and exception translation into `L2UnavailableError`.
 
 ### Cache-Aside Flow
 
@@ -243,9 +261,24 @@ TieredCache.getOrSet(key)
 
 `getOrSet()` keeps a per-key `asyncio.Lock`. The first coroutine becomes the leader, and concurrent callers for the same key wait on that lock instead of calling the factory again.
 
+This keeps unrelated keys independent while preventing duplicate work for the same hot key. It is intentionally process-local and stays within the assignment scope.
+
 ### Grace Period
 
 When a cached L1 value has expired, the library can still serve it for a short grace window if the factory fails. This protects callers during transient downstream outages.
+
+### Scalability Notes
+
+- L1 is local to each process.
+- L2 is the shared layer across instances.
+- Horizontal scaling works by sharing Redis while keeping fast local L1 reads per instance.
+- Redis cluster-specific routing and operational hardening would be a next step for larger deployments.
+
+### Security Notes
+
+- Redis credentials are provided via constructor arguments or environment variables.
+- No credentials are hard-coded.
+- Namespace isolation exists at both the `TieredCache` layer and the `RedisL2` storage layer.
 
 ## Configuration Reference
 
@@ -267,7 +300,13 @@ When a cached L1 value has expired, the library can still serve it for a short g
 
 ## Key Design Decisions
 
-See [DESIGN_DECISIONS.md](./DESIGN_DECISIONS.md).
+- **Python with `asyncio`**: keeps the API natural for async application code and network-bound L2 backends without introducing external locking libraries.
+- **L1 uses LRU plus TTL**: TTL alone does not bound memory usage, so LRU handles capacity while TTL handles freshness.
+- **Per-key `asyncio.Lock` for stampede protection**: prevents duplicate factory calls for the same key while keeping unrelated keys independent.
+- **Lazy eviction in L1**: avoids sweeper threads and keeps the library small, at the cost of leaving expired entries in memory until they are touched.
+- **JSON serialization in L2**: portable, inspectable, and safer than pickle for a library submission, with the tradeoff that values must be JSON-serializable.
+- **Grace-period fallback from L1 stale data**: lets the cache serve slightly old data during downstream failures without expanding the design into a distributed recovery mechanism.
+- **Single shipped L2 driver: Redis**: keeps the submission focused while still preserving a pluggable backend contract for future extensions.
 
 ## What I Would Change With More Time
 
