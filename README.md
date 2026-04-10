@@ -30,14 +30,14 @@ pip install -e ".[dev]"
 
 ## Usage
 
-### Read-Through Caching with `getOrSet()`
+### Cache-Aside
 
-The simplest way to use the library is a read-through pattern built on `getOrSet()`. In caching literature this is often called "cache-aside": your application asks the cache for a key, and on a miss the cache calls your factory function, stores the result, and returns it. The example below shows the full `TieredCache(...)` constructor so every parameter is visible:
+The simplest way to use the library is through `getOrSet()`. The example below shows the full `TieredCache(...)` constructor so every parameter is visible:
 
 ```python
 import asyncio
 
-from shipsy_cache import CacheEventEmitter, TieredCache
+from shipsy_cache import TieredCache
 
 
 async def main() -> None:
@@ -47,7 +47,7 @@ async def main() -> None:
         default_ttl="5m",
         grace_period="30s",
         namespace="orders",
-        event_emitter=CacheEventEmitter(),
+        event_emitter=None,
     )
 
     async def slow_database_lookup() -> dict[str, str]:
@@ -185,16 +185,15 @@ result = await cache.getOrSet(
 ### Event Listening
 
 ```python
-from shipsy_cache import CacheEventEmitter, TieredCache
+from shipsy_cache import TieredCache
 
-emitter = CacheEventEmitter()
 cache = TieredCache(
     l2_backend=None,
     l1_max_size=1000,
     default_ttl="5m",
     grace_period="30s",
     namespace="events-demo",
-    event_emitter=emitter,
+    event_emitter=None,
 )
 
 
