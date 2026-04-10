@@ -32,7 +32,7 @@ pip install -e ".[dev]"
 
 ### Cache-Aside
 
-The simplest way to use the library is through `getOrSet()`. The example below shows the full `TieredCache(...)` constructor so every parameter is visible:
+The simplest way to use the library is through `getOrSet()`. This example shows the full `RedisL2(...)` and `TieredCache(...)` setup so every parameter is visible in one place:
 
 ```python
 import asyncio
@@ -53,8 +53,8 @@ async def main() -> None:
     cache = TieredCache(
         l2_backend=l2,
         l1_max_size=1000,
-        default_ttl="5m",
-        grace_period="30s",
+        default_ttl="10m",
+        grace_period="1m",
         namespace="orders",
         event_emitter=None,
     )
@@ -67,44 +67,6 @@ async def main() -> None:
     second = await cache.getOrSet("order:1001", slow_database_lookup, ttl="30s")
     print(first)
     print(second)
-
-
-asyncio.run(main())
-```
-
-### With Redis (Production)
-
-```python
-import asyncio
-
-from shipsy_cache import RedisL2, TieredCache
-
-
-async def main() -> None:
-    l2 = RedisL2(
-        host="localhost",
-        port=6379,
-        db=0,
-        password=None,
-        ssl=False,
-        namespace="rates_backend",
-        socket_timeout=2.0,
-    )
-    cache = TieredCache(
-        l2_backend=l2,
-        l1_max_size=1000,
-        default_ttl="10m",
-        grace_period="1m",
-        namespace="rates",
-        event_emitter=None,
-    )
-
-    rate = await cache.getOrSet(
-        "delhivery:DEL:BLR",
-        lambda: carrier_api.get_rate("delhivery", "DEL", "BLR"),
-        ttl="15m",
-    )
-    print(rate)
 
 
 asyncio.run(main())
