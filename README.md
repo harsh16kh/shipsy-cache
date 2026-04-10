@@ -30,25 +30,34 @@ pip install -e ".[dev]"
 
 ## Usage
 
-### Basic Cache-Aside
+### Read-Through Caching with `getOrSet()`
 
-The simplest way to use the library is the cache-aside pattern shown in [`examples/basic_usage.py`](/Users/harshkhandelwal/Documents/New project/shipsy-cache/examples/basic_usage.py):
+The simplest way to use the library is a read-through pattern built on `getOrSet()`. In caching literature this is often called "cache-aside": your application asks the cache for a key, and on a miss the cache calls your factory function, stores the result, and returns it. The example below shows the full `TieredCache(...)` constructor so every parameter is visible:
 
 ```python
 import asyncio
 
-from shipsy_cache import TieredCache
+from shipsy_cache import CacheEventEmitter, TieredCache
 
 
 async def main() -> None:
-    cache = TieredCache(default_ttl=1, grace_period=2, namespace="basic-demo")
+    cache = TieredCache(
+        l2_backend=None,
+        l1_max_size=1000,
+        default_ttl="5m",
+        grace_period="30s",
+        namespace="orders",
+        event_emitter=CacheEventEmitter(),
+    )
 
     async def slow_database_lookup() -> dict[str, str]:
         await asyncio.sleep(0.2)
         return {"order_id": "ORD-1001", "status": "in_transit"}
 
-    result = await cache.getOrSet("order:1001", slow_database_lookup, ttl="30s")
-    print(result)
+    first = await cache.getOrSet("order:1001", slow_database_lookup, ttl="30s")
+    second = await cache.getOrSet("order:1001", slow_database_lookup, ttl="30s")
+    print(first)
+    print(second)
 
 
 asyncio.run(main())
@@ -63,12 +72,22 @@ from shipsy_cache import RedisL2, TieredCache
 
 
 async def main() -> None:
-    l2 = RedisL2(host="localhost", port=6379, namespace="rates")
+    l2 = RedisL2(
+        host="localhost",
+        port=6379,
+        db=0,
+        password=None,
+        ssl=False,
+        namespace="rates_backend",
+        socket_timeout=2.0,
+    )
     cache = TieredCache(
         l2_backend=l2,
-        namespace="rates",
+        l1_max_size=1000,
         default_ttl="10m",
         grace_period="1m",
+        namespace="rates",
+        event_emitter=None,
     )
 
     rate = await cache.getOrSet(
@@ -82,15 +101,50 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-### With FakeRedisL2 (Development & Testing)
+### With FakeRedisL2 (Development, Demos, and Integration-Style Tests)
 
-`FakeRedisL2` is designed for development, demos, and integration-style tests. Unlike `MemoryStubL2`, it JSON-serializes values on write and deserializes them on read, which means it catches serialization bugs that would otherwise stay hidden until a real Redis deployment.
+`FakeRedisL2` is the "Redis-like local simulator" backend. It is designed for development, demos, and integration-style tests. Unlike `MemoryStubL2`, it JSON-serializes values on write and deserializes them on read, which means it catches serialization bugs that would otherwise stay hidden until a real Redis deployment.
 
 ```python
-from shipsy_cache import TieredCache, FakeRedisL2
+from shipsy_cache import FakeRedisL2, TieredCache
 
-l2 = FakeRedisL2(namespace="myservice", latency_ms=5)
-cache = TieredCache(l2_backend=l2, default_ttl="10m", grace_period="1m")
+l2 = FakeRedisL2(
+    namespace="myservice_backend",
+    latency_ms=5.0,
+    failure_rate=0.0,
+)
+cache = TieredCache(
+    l2_backend=l2,
+    l1_max_size=500,
+    default_ttl="10m",
+    grace_period="1m",
+    namespace="myservice",
+    event_emitter=None,
+)
+```
+
+### Backend Selection Guide
+
+Use the backends by role rather than by "database count":
+
+- `MemoryStubL2`: "default in-process backend" for zero-dependency usage and lightweight unit tests.
+- `FakeRedisL2`: "Redis-like local simulator" for demos and tests that should cross a JSON serialization boundary and optionally simulate latency or failures.
+- `RedisL2`: "production shared backend" for real multi-instance deployments.
+
+```python
+from shipsy_cache import FakeRedisL2, MemoryStubL2, RedisL2
+
+default_local_backend = MemoryStubL2()
+redis_like_local_backend = FakeRedisL2(namespace="demo", latency_ms=5.0, failure_rate=0.0)
+production_shared_backend = RedisL2(
+    host="localhost",
+    port=6379,
+    db=0,
+    password=None,
+    ssl=False,
+    namespace="shipsy_cache",
+    socket_timeout=2.0,
+)
 ```
 
 ### Logistics Patterns
@@ -131,9 +185,17 @@ result = await cache.getOrSet(
 ### Event Listening
 
 ```python
-from shipsy_cache import TieredCache
+from shipsy_cache import CacheEventEmitter, TieredCache
 
-cache = TieredCache()
+emitter = CacheEventEmitter()
+cache = TieredCache(
+    l2_backend=None,
+    l1_max_size=1000,
+    default_ttl="5m",
+    grace_period="30s",
+    namespace="events-demo",
+    event_emitter=emitter,
+)
 
 
 def listener(payload: dict) -> None:
@@ -250,6 +312,12 @@ L1 is a bounded `OrderedDict`-backed LRU with lazy TTL eviction and `threading.L
 ### L2 — Pluggable Backend
 
 L2 is an async interface. The library ships with three implementations: `MemoryStubL2` for unit tests, `FakeRedisL2` for integration tests and demos (with JSON serialization and configurable latency), and `RedisL2` for production deployments.
+
+If you prefer plain-language naming:
+
+- `MemoryStubL2` = default in-process backend
+- `FakeRedisL2` = Redis-like local simulator
+- `RedisL2` = production shared backend
 
 ### Cache-Aside Flow
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-`shipsy_cache` is a library-first, two-tier cache built around a local in-memory L1 and a pluggable async L2. The primary design target is cache-aside usage inside another Python application, not running as a standalone service.
+`shipsy_cache` is a library-first, two-tier cache built around a local in-memory L1 and a pluggable async L2. The primary design target is read-through caching inside another Python application, not running as a standalone service. In caching literature this pattern is often called "cache-aside": the application asks the cache for a key, and on a miss the cache invokes a factory to rebuild and store the value.
 
 ## Component Diagram (ASCII art)
 
@@ -78,7 +78,11 @@ Backends are async because they may involve network I/O.
 
 ### Memory Stub Implementation
 
-`MemoryStubL2` is a fully working in-process fallback backend with TTL support, JSON serialization, and async methods. It makes the library usable without external infrastructure.
+`MemoryStubL2` is the default in-process backend. It is optimized for zero-dependency usage and lightweight unit tests, and keeps the library usable without external infrastructure.
+
+### Fake Redis Simulation
+
+`FakeRedisL2` is the Redis-like local simulator. It stores JSON-serialized bytes internally, can simulate network latency, and can inject connection failures. It is meant for demos and integration-style tests where developers want something closer to Redis behavior without running Redis itself.
 
 ## Cache-Aside Flow
 
