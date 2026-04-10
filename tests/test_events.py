@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 import pytest
 
 from shipsy_cache import FactoryError, TieredCache
+from tests.support import InMemoryTestL2
 
 
 @pytest.mark.asyncio
@@ -15,7 +16,7 @@ async def test_cache_hit_event_emitted() -> None:
     """A cache hit should emit a structured hit event."""
 
     events: List[Dict[str, Any]] = []
-    cache = TieredCache()
+    cache = TieredCache(l2_backend=InMemoryTestL2())
     cache.on("cache:hit", events.append)
 
     await cache.set("order-1", {"status": "ready"})
@@ -30,7 +31,7 @@ async def test_cache_miss_event_emitted() -> None:
     """A cold miss should emit a miss event."""
 
     events: List[Dict[str, Any]] = []
-    cache = TieredCache()
+    cache = TieredCache(l2_backend=InMemoryTestL2())
     cache.on("cache:miss", events.append)
 
     value = await cache.get("missing")
@@ -46,7 +47,7 @@ async def test_cache_set_event_emitted() -> None:
     """Writes should emit a cache:set event."""
 
     events: List[Dict[str, Any]] = []
-    cache = TieredCache()
+    cache = TieredCache(l2_backend=InMemoryTestL2())
     cache.on("cache:set", events.append)
 
     await cache.set("order-2", "value")
@@ -61,7 +62,7 @@ async def test_stale_served_event_emitted() -> None:
     """Serving stale data during a factory failure should emit an event."""
 
     events: List[Dict[str, Any]] = []
-    cache = TieredCache(default_ttl=0.05, grace_period=1)
+    cache = TieredCache(l2_backend=InMemoryTestL2(), default_ttl=0.05, grace_period=1)
     cache.on("cache:stale-served", events.append)
 
     await cache.set("carrier", {"rate": 42}, ttl=0.05)
@@ -82,7 +83,7 @@ async def test_stale_served_event_emitted() -> None:
 async def test_listener_exception_does_not_propagate() -> None:
     """Listener failures should never break cache operations."""
 
-    cache = TieredCache()
+    cache = TieredCache(l2_backend=InMemoryTestL2())
 
     def broken_listener(_: Dict[str, Any]) -> None:
         raise RuntimeError("listener failed")

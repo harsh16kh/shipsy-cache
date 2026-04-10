@@ -1,7 +1,7 @@
 """Shipsy Cache Library — Visual Demo
 
 A rich terminal demonstration of every library feature using logistics-realistic
-data. Uses FakeRedisL2 so no external services are needed.
+data. Uses a private demo-only backend so no external services are needed.
 
 Install and run:
     pip install rich
@@ -13,17 +13,19 @@ If rich is not installed, the demo will print a helpful error message.
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import sys
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from shipsy_cache import FakeRedisL2, FactoryError, TieredCache
+from shipsy_cache import FactoryError, TieredCache
+from shipsy_cache.l2.base import L2Backend
 
 
 CARRIERS: Dict[str, Dict[str, float]] = {
@@ -54,6 +56,95 @@ L2_STYLE = "magenta"
 ERROR_STYLE = "bold red"
 KEY_STYLE = "blue"
 LATENCY_STYLE = "dim"
+
+
+class _VisualDemoL2(L2Backend):
+    """Private in-process L2 used only by the visual demo."""
+
+    def __init__(self, namespace: str = "shipsy_demo", latency_ms: float = 5.0) -> None:
+        """Initialize the demo backend."""
+
+        self._namespace = namespace
+        self._latency_ms = latency_ms
+        self._store: Dict[str, Tuple[bytes, Optional[float]]] = {}
+        self._lock = asyncio.Lock()
+        self._operations = 0
+
+    async def get(self, key: str) -> Optional[Any]:
+        """Return a fresh value or ``None`` when missing or expired."""
+
+        self._operations += 1
+        await self._apply_latency()
+        async with self._lock:
+            entry = self._store.get(self._prefix(key))
+            if entry is None:
+                return None
+
+            raw_value, expire_at = entry
+            if expire_at is not None and time.monotonic() >= expire_at:
+                self._store.pop(self._prefix(key), None)
+                return None
+
+            return json.loads(raw_value.decode("utf-8"))
+
+    async def set(self, key: str, value: Any, ttl_seconds: float) -> None:
+        """Store a JSON-serializable value with TTL semantics."""
+
+        self._operations += 1
+        await self._apply_latency()
+        expire_at = time.monotonic() + ttl_seconds if ttl_seconds is not None else None
+        async with self._lock:
+            self._store[self._prefix(key)] = (
+                json.dumps(value).encode("utf-8"),
+                expire_at,
+            )
+
+    async def delete(self, key: str) -> None:
+        """Delete a key if present."""
+
+        self._operations += 1
+        await self._apply_latency()
+        async with self._lock:
+            self._store.pop(self._prefix(key), None)
+
+    async def clear(self) -> None:
+        """Clear the demo backend."""
+
+        await self._apply_latency()
+        async with self._lock:
+            self._store.clear()
+
+    async def ping(self) -> bool:
+        """Return ``True`` because the demo backend is in-process."""
+
+        return True
+
+    def diagnostics(self) -> Dict[str, Any]:
+        """Return small diagnostics for the final dashboard."""
+
+        now = time.monotonic()
+        live_keys = sum(
+            1
+            for _, expire_at in self._store.values()
+            if expire_at is None or expire_at > now
+        )
+        return {
+            "namespace": self._namespace,
+            "live_keys": live_keys,
+            "total_operations": self._operations,
+            "simulated_failures": 0,
+        }
+
+    async def _apply_latency(self) -> None:
+        """Simulate L2 round-trip latency."""
+
+        if self._latency_ms > 0:
+            await asyncio.sleep(self._latency_ms / 1000.0)
+
+    def _prefix(self, key: str) -> str:
+        """Prefix storage keys for the demo backend."""
+
+        return f"{self._namespace}:{key}"
 
 
 async def fetch_carrier_rate(carrier: str, origin: str, dest: str, weight: float) -> Dict[str, Any]:
@@ -390,7 +481,7 @@ async def scenario_graceful_degradation(
     console: Any,
     ui: Dict[str, Any],
     cache: TieredCache,
-    l2: FakeRedisL2,
+    l2: _VisualDemoL2,
 ) -> None:
     """Show stale serving during a simulated carrier outage."""
 
@@ -465,7 +556,7 @@ async def scenario_l2_hydration(
     console: Any,
     ui: Dict[str, Any],
     cache: TieredCache,
-    l2: FakeRedisL2,
+    l2: _VisualDemoL2,
     event_log: List[Dict[str, Any]],
 ) -> None:
     """Show L2 to L1 hydration for a multi-instance style workflow."""
@@ -580,7 +671,7 @@ async def scenario_event_stream(
     console.print(table)
 
 
-def dashboard_panel(ui: Dict[str, Any], cache: TieredCache, l2: FakeRedisL2, event_log: List[Dict[str, Any]]) -> Any:
+def dashboard_panel(ui: Dict[str, Any], cache: TieredCache, l2: _VisualDemoL2, event_log: List[Dict[str, Any]]) -> Any:
     """Build the final system dashboard."""
 
     table_cls = ui["Table"]
@@ -600,7 +691,7 @@ def dashboard_panel(ui: Dict[str, Any], cache: TieredCache, l2: FakeRedisL2, eve
     right = table_cls(box=box_mod.SIMPLE_HEAVY, expand=True)
     right.add_column("L2 Diagnostics", style=KEY_STYLE)
     right.add_column("Value")
-    right.add_row("Backend", "FakeRedisL2")
+    right.add_row("Backend", "Demo L2")
     right.add_row("Live keys", str(l2_stats["live_keys"]))
     right.add_row("Total operations", str(l2_stats["total_operations"]))
     right.add_row("Simulated failures", str(l2_stats["simulated_failures"]))
@@ -630,7 +721,6 @@ async def main() -> None:
     except ImportError:
         print("This demo requires the 'rich' library for visual output.")
         print("Install it with: pip install rich")
-        print("\nOr run the basic example: python examples/basic_usage.py")
         return
 
     console = Console()
@@ -643,7 +733,7 @@ async def main() -> None:
         "box": box,
     }
 
-    l2 = FakeRedisL2(namespace="shipsy_demo", latency_ms=5)
+    l2 = _VisualDemoL2(namespace="shipsy_demo", latency_ms=5)
     cache = TieredCache(
         l2_backend=l2,
         l1_max_size=200,

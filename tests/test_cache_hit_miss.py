@@ -6,11 +6,12 @@ from typing import Any, Optional
 
 import pytest
 
-from shipsy_cache import MemoryStubL2, TieredCache
+from shipsy_cache import TieredCache
 from shipsy_cache.l2.base import L2Backend
+from tests.support import InMemoryTestL2
 
 
-class TrackingMemoryL2(MemoryStubL2):
+class TrackingMemoryL2(InMemoryTestL2):
     """Memory L2 backend that counts read calls."""
 
     def __init__(self) -> None:
@@ -30,7 +31,7 @@ class TrackingMemoryL2(MemoryStubL2):
 async def test_get_returns_none_on_cold_cache() -> None:
     """Cold cache lookups should return ``None``."""
 
-    cache = TieredCache()
+    cache = TieredCache(l2_backend=InMemoryTestL2())
 
     assert await cache.get("missing") is None
 
@@ -39,7 +40,7 @@ async def test_get_returns_none_on_cold_cache() -> None:
 async def test_set_then_get_returns_value() -> None:
     """Values written to the cache should be retrievable."""
 
-    cache = TieredCache()
+    cache = TieredCache(l2_backend=InMemoryTestL2())
     await cache.set("customer", {"name": "Asha"}, ttl=60)
 
     assert await cache.get("customer") == {"name": "Asha"}
@@ -62,7 +63,7 @@ async def test_l1_hit_does_not_reach_l2() -> None:
 async def test_l2_hit_populates_l1() -> None:
     """Values fetched from L2 should hydrate L1."""
 
-    cache = TieredCache()
+    cache = TieredCache(l2_backend=InMemoryTestL2())
     namespaced_key = cache._namespaced_key("invoice")
     await cache._l2.set(namespaced_key, {"total": 123}, ttl_seconds=60)
 
@@ -81,7 +82,7 @@ async def test_get_or_set_calls_factory_on_miss() -> None:
         calls += 1
         return "built"
 
-    cache = TieredCache()
+    cache = TieredCache(l2_backend=InMemoryTestL2())
     value = await cache.getOrSet("build-key", factory, ttl=60)
 
     assert value == "built"
@@ -99,7 +100,7 @@ async def test_get_or_set_does_not_call_factory_on_hit() -> None:
         calls += 1
         return "fresh"
 
-    cache = TieredCache()
+    cache = TieredCache(l2_backend=InMemoryTestL2())
     await cache.set("warm", "existing", ttl=60)
 
     value = await cache.getOrSet("warm", factory, ttl=60)
@@ -112,7 +113,7 @@ async def test_get_or_set_does_not_call_factory_on_hit() -> None:
 async def test_invalidate_removes_from_both_tiers() -> None:
     """Invalidation should remove the key from L1 and L2."""
 
-    cache = TieredCache()
+    cache = TieredCache(l2_backend=InMemoryTestL2())
     await cache.set("session", {"active": True}, ttl=60)
 
     await cache.invalidate("session")

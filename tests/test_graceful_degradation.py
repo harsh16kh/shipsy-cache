@@ -9,6 +9,7 @@ import pytest
 
 from shipsy_cache import FactoryError, L2UnavailableError, TieredCache
 from shipsy_cache.l2.base import L2Backend
+from tests.support import InMemoryTestL2
 
 
 class FlakyL2(L2Backend):
@@ -55,7 +56,7 @@ class FlakyL2(L2Backend):
 async def test_serves_stale_when_factory_fails() -> None:
     """An expired L1 value within the grace period should be served on failure."""
 
-    cache = TieredCache(default_ttl=0.05, grace_period=1)
+    cache = TieredCache(l2_backend=InMemoryTestL2(), default_ttl=0.05, grace_period=1)
     await cache.set("rates", {"amount": 99}, ttl=0.05)
     await asyncio.sleep(0.1)
 
@@ -71,7 +72,7 @@ async def test_serves_stale_when_factory_fails() -> None:
 async def test_raises_when_stale_beyond_grace_period() -> None:
     """Expired values outside the grace window should raise ``FactoryError``."""
 
-    cache = TieredCache(default_ttl=0.05, grace_period=0.05)
+    cache = TieredCache(l2_backend=InMemoryTestL2(), default_ttl=0.05, grace_period=0.05)
     await cache.set("rates", {"amount": 99}, ttl=0.05)
     await asyncio.sleep(0.2)
 

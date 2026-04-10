@@ -12,9 +12,10 @@ import pytest
 from shipsy_cache import CacheEventEmitter, FactoryError, L2UnavailableError, TieredCache
 from shipsy_cache.l1.memory_store import MemoryStore
 from shipsy_cache.l2.redis_store import RedisError, RedisL2
+from tests.support import InMemoryTestL2
 
 
-class FakeRedisClient:
+class MockRedisClient:
     """Small async Redis client test double."""
 
     def __init__(self) -> None:
@@ -148,7 +149,7 @@ async def test_redis_l2_methods_and_error_wrapping() -> None:
     """RedisL2 should namespace keys, serialize payloads, and wrap backend errors."""
 
     backend = RedisL2(namespace="unit")
-    client = FakeRedisClient()
+    client = MockRedisClient()
     backend._client = client
 
     await backend.set("key", {"value": 7}, ttl_seconds=0.5)
@@ -184,7 +185,7 @@ async def test_redis_l2_methods_and_error_wrapping() -> None:
 async def test_cache_internal_branches_are_exercised() -> None:
     """Exercise smaller internal branches that are hard to reach via public API alone."""
 
-    cache = TieredCache()
+    cache = TieredCache(l2_backend=InMemoryTestL2())
 
     assert cache._get_stale_within_grace(cache._namespaced_key("missing")) is None
     cache._cleanup_inflight("missing")

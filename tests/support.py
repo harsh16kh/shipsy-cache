@@ -1,4 +1,9 @@
-"""In-process L2 backend for zero-dependency usage and testing."""
+"""Test-only backend helpers for unit tests.
+
+These helpers keep the public library surface focused on Redis while still
+allowing the unit suite to exercise cache behavior without requiring a live
+Redis instance.
+"""
 
 from __future__ import annotations
 
@@ -7,14 +12,14 @@ import json
 import time
 from typing import Any, Dict, Optional
 
-from .base import L2Backend
+from shipsy_cache.l2.base import L2Backend
 
 
-class MemoryStubL2(L2Backend):
-    """A fully working in-process L2 backend with TTL support."""
+class InMemoryTestL2(L2Backend):
+    """Small async in-memory L2 backend used only by the test suite."""
 
     def __init__(self) -> None:
-        """Initialize the in-memory backend state."""
+        """Initialize backend state."""
 
         self._lock = asyncio.Lock()
         self._store: Dict[str, Dict[str, Any]] = {}
@@ -27,36 +32,37 @@ class MemoryStubL2(L2Backend):
             if entry is None:
                 return None
 
-            if entry["expire_at"] <= time.time():
+            if entry["expire_at"] is not None and entry["expire_at"] <= time.time():
                 self._store.pop(key, None)
                 return None
 
             return json.loads(entry["payload"])
 
     async def set(self, key: str, value: Any, ttl_seconds: float) -> None:
-        """Store a JSON-serializable value under ``key`` with TTL semantics."""
+        """Store a JSON-serializable value under ``key``."""
 
         payload = json.dumps(value)
+        expire_at = time.time() + ttl_seconds if ttl_seconds is not None else None
         async with self._lock:
             self._store[key] = {
                 "payload": payload,
-                "expire_at": time.time() + ttl_seconds,
+                "expire_at": expire_at,
                 "created_at": time.time(),
             }
 
     async def delete(self, key: str) -> None:
-        """Delete ``key`` if it exists."""
+        """Delete ``key`` if present."""
 
         async with self._lock:
             self._store.pop(key, None)
 
     async def clear(self) -> None:
-        """Clear the entire in-process backend."""
+        """Clear the entire test backend."""
 
         async with self._lock:
             self._store.clear()
 
     async def ping(self) -> bool:
-        """Return ``True`` because the in-process backend is always reachable."""
+        """Return ``True`` because the test backend is always reachable."""
 
         return True

@@ -10,7 +10,7 @@ from .events import CacheEventEmitter
 from .exceptions import FactoryError, L2UnavailableError
 from .l1.memory_store import MemoryStore
 from .l2.base import L2Backend
-from .l2.memory_stub import MemoryStubL2
+from .l2.redis_store import RedisL2
 from .ttl import parse_ttl
 
 
@@ -33,7 +33,7 @@ class TieredCache:
         """Initialize the tiered cache.
 
         Args:
-            l2_backend: Optional L2 backend. Defaults to ``MemoryStubL2``.
+            l2_backend: Optional L2 backend. Defaults to ``RedisL2``.
             l1_max_size: Maximum size for the L1 in-memory cache.
             default_ttl: Default TTL for writes when no override is provided.
             grace_period: Additional time window for serving stale values after
@@ -46,7 +46,7 @@ class TieredCache:
         self._default_ttl_seconds = parse_ttl(default_ttl)
         self._grace_period_seconds = parse_ttl(grace_period)
         self._l1 = MemoryStore(max_size=l1_max_size)
-        self._l2 = l2_backend or MemoryStubL2()
+        self._l2 = l2_backend or RedisL2()
         self._events = event_emitter or CacheEventEmitter()
         self._inflight: Dict[str, asyncio.Lock] = {}
         self._inflight_results: Dict[str, Tuple[bool, Any]] = {}

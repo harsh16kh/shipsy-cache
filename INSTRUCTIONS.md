@@ -20,18 +20,6 @@ Repository layout:
 - `examples/`: runnable demos
 - `docker/`: local container setup for Redis-backed testing
 
-## Running Without Redis (default stub)
-
-The default `TieredCache()` constructor uses `MemoryStubL2`, which is fully in-process and needs no external services.
-
-```python
-from shipsy_cache import TieredCache
-
-cache = TieredCache()
-```
-
-This is the recommended mode for local development, fast tests, and environments where a shared L2 is unnecessary.
-
 ## Running With Redis
 
 Set the environment variables or pass constructor arguments explicitly:
@@ -78,7 +66,7 @@ This starts:
 
 `TieredCache` options:
 
-- `l2_backend`: async L2 implementation, defaults to `MemoryStubL2`
+- `l2_backend`: async L2 implementation, typically `RedisL2`
 - `l1_max_size`: bounded L1 capacity
 - `default_ttl`: fallback TTL for writes
 - `grace_period`: stale serving window after expiry
@@ -126,11 +114,10 @@ python3 -m pytest tests/integration/ -v
 
 ## CI/CD Pipeline
 
-The GitHub Actions workflow at `.github/workflows/ci.yml` performs:
+The GitHub Actions workflow at `.github/workflows/tests.yml` performs:
 
-- Unit tests across Python 3.9, 3.10, and 3.11
-- Coverage enforcement with `--cov-fail-under=90`
-- Redis-backed integration tests on Python 3.11 using a service container
+- Unit tests on Python 3.10
+- Redis-backed integration tests on Python 3.10 using a service container
 
 ## Adding a New L2 Backend (extension guide)
 

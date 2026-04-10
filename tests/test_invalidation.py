@@ -5,13 +5,14 @@ from __future__ import annotations
 import pytest
 
 from shipsy_cache import TieredCache
+from tests.support import InMemoryTestL2
 
 
 @pytest.mark.asyncio
 async def test_invalidate_missing_key_is_noop() -> None:
     """Invalidating a missing key should not raise errors."""
 
-    cache = TieredCache()
+    cache = TieredCache(l2_backend=InMemoryTestL2())
 
     await cache.invalidate("missing")
 
@@ -22,7 +23,7 @@ async def test_invalidate_missing_key_is_noop() -> None:
 async def test_clear_removes_all_entries() -> None:
     """Clearing the cache should empty both tiers."""
 
-    cache = TieredCache()
+    cache = TieredCache(l2_backend=InMemoryTestL2())
     await cache.set("a", 1, ttl=60)
     await cache.set("b", 2, ttl=60)
 
@@ -37,7 +38,7 @@ async def test_clear_removes_all_entries() -> None:
 async def test_namespace_isolation_between_caches() -> None:
     """Two cache instances should isolate keys using namespaces."""
 
-    shared_l2 = TieredCache()._l2
+    shared_l2 = InMemoryTestL2()
     cache_a = TieredCache(l2_backend=shared_l2, namespace="a")
     cache_b = TieredCache(l2_backend=shared_l2, namespace="b")
 

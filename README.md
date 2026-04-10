@@ -5,15 +5,15 @@ A production-quality, two-tier caching library built for high-throughput logisti
 ## Quick Start
 
 1. Install the library.
-2. Run the basic usage example.
+2. Start Redis.
 3. Import `TieredCache` into your service and start caching reads.
 
 ```bash
+docker compose -f docker/docker-compose.yml up redis -d
 pip install -e .
-python examples/basic_usage.py
 ```
 
-This path keeps the first experience focused on the library itself: `TieredCache`, TTLs, invalidation, and cache lifecycle events. The visual demo still exists, but it is optional and moved to the end of this README.
+This path keeps the first experience focused on the library itself: `TieredCache`, `RedisL2`, TTLs, invalidation, and stampede protection. The visual demo still exists, but it is optional and moved to the end of this README.
 
 ## Installation
 
@@ -37,12 +37,21 @@ The simplest way to use the library is through `getOrSet()`. The example below s
 ```python
 import asyncio
 
-from shipsy_cache import TieredCache
+from shipsy_cache import RedisL2, TieredCache
 
 
 async def main() -> None:
+    l2 = RedisL2(
+        host="localhost",
+        port=6379,
+        db=0,
+        password=None,
+        ssl=False,
+        namespace="orders_backend",
+        socket_timeout=2.0,
+    )
     cache = TieredCache(
-        l2_backend=None,
+        l2_backend=l2,
         l1_max_size=1000,
         default_ttl="5m",
         grace_period="30s",
@@ -139,10 +148,19 @@ result = await cache.getOrSet(
 ### Event Listening
 
 ```python
-from shipsy_cache import TieredCache
+from shipsy_cache import RedisL2, TieredCache
 
+l2 = RedisL2(
+    host="localhost",
+    port=6379,
+    db=0,
+    password=None,
+    ssl=False,
+    namespace="events_backend",
+    socket_timeout=2.0,
+)
 cache = TieredCache(
-    l2_backend=None,
+    l2_backend=l2,
     l1_max_size=1000,
     default_ttl="5m",
     grace_period="30s",
@@ -234,7 +252,7 @@ L1 is a bounded `OrderedDict`-backed LRU with lazy TTL eviction and `threading.L
 
 ### L2 — Pluggable Backend
 
-L2 is an async interface. In normal library usage, the key thing to understand is that you can provide a shared backend such as `RedisL2`, or rely on the built-in default fallback when no explicit `l2_backend` is supplied.
+L2 is an async interface. This library currently ships with `RedisL2` as the working shared backend implementation.
 
 ### Cache-Aside Flow
 
@@ -271,7 +289,7 @@ When a cached L1 value has expired, the library can still serve it for a short g
 
 | Option | Where | Default | Description |
 | --- | --- | --- | --- |
-| `l2_backend` | `TieredCache` | `MemoryStubL2()` | Async L2 backend implementation |
+| `l2_backend` | `TieredCache` | `RedisL2()` | Async L2 backend implementation |
 | `l1_max_size` | `TieredCache` | `1000` | Maximum fresh entries in local L1 |
 | `default_ttl` | `TieredCache` | `300` | Default TTL for writes; accepts numbers or strings like `5m` |
 | `grace_period` | `TieredCache` | `60` | Window for serving stale L1 data after expiry |
@@ -320,4 +338,4 @@ The demo covers:
 - L2 → L1 hydration: simulating multi-instance deployment
 - Event observability: full event stream display
 
-Internally, the demo uses `FakeRedisL2` so it can run without Docker, Redis, or external services.
+Internally, the demo uses a private demo-only backend so it can run without Docker, Redis, or external services.

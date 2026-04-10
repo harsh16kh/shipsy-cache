@@ -7,6 +7,7 @@ import asyncio
 import pytest
 
 from shipsy_cache import TieredCache
+from tests.support import InMemoryTestL2
 
 
 @pytest.mark.asyncio
@@ -21,7 +22,7 @@ async def test_stampede_factory_called_exactly_once() -> None:
         await asyncio.sleep(0.1)
         return "result_value"
 
-    cache = TieredCache()
+    cache = TieredCache(l2_backend=InMemoryTestL2())
     tasks = [cache.getOrSet("hot_key", slow_factory, ttl=60) for _ in range(20)]
     results = await asyncio.gather(*tasks)
 
@@ -48,7 +49,7 @@ async def test_stampede_different_keys_independent() -> None:
         await asyncio.sleep(0.05)
         return "b"
 
-    cache = TieredCache()
+    cache = TieredCache(l2_backend=InMemoryTestL2())
     results = await asyncio.gather(
         *(cache.getOrSet("key-a", factory_a, ttl=60) for _ in range(10)),
         *(cache.getOrSet("key-b", factory_b, ttl=60) for _ in range(10)),
@@ -71,7 +72,7 @@ async def test_stampede_after_cache_populated_no_factory_call() -> None:
         call_count += 1
         return "new-value"
 
-    cache = TieredCache()
+    cache = TieredCache(l2_backend=InMemoryTestL2())
     await cache.set("ready", "existing", ttl=60)
 
     results = await asyncio.gather(*(cache.getOrSet("ready", factory, ttl=60) for _ in range(10)))

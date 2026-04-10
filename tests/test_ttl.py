@@ -7,6 +7,7 @@ import asyncio
 import pytest
 
 from shipsy_cache import TieredCache, parse_ttl
+from tests.support import InMemoryTestL2
 
 
 def test_parse_ttl_seconds_int() -> None:
@@ -38,7 +39,7 @@ def test_parse_ttl_invalid_raises() -> None:
 async def test_expired_key_not_returned() -> None:
     """Expired entries should not be returned by cache reads."""
 
-    cache = TieredCache(default_ttl=0.05)
+    cache = TieredCache(l2_backend=InMemoryTestL2(), default_ttl=0.05)
     await cache.set("expiring", "value", ttl=0.05)
 
     await asyncio.sleep(0.1)
@@ -50,7 +51,7 @@ async def test_expired_key_not_returned() -> None:
 async def test_fresh_key_returned() -> None:
     """Fresh entries should be returned before their TTL elapses."""
 
-    cache = TieredCache(default_ttl=60)
+    cache = TieredCache(l2_backend=InMemoryTestL2(), default_ttl=60)
     await cache.set("fresh", "value", ttl=60)
 
     assert await cache.get("fresh") == "value"
@@ -60,7 +61,7 @@ async def test_fresh_key_returned() -> None:
 async def test_ttl_applied_to_l1_and_l2() -> None:
     """The same TTL should be enforced across both tiers."""
 
-    cache = TieredCache(default_ttl=0.05)
+    cache = TieredCache(l2_backend=InMemoryTestL2(), default_ttl=0.05)
     await cache.set("ttl-key", {"ok": True}, ttl=0.05)
 
     namespaced_key = cache._namespaced_key("ttl-key")
