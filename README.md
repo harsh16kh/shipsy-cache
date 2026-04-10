@@ -2,9 +2,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 
-A production-quality, two-tier caching library for high-throughput logistics backends. It is designed for the kinds of read-heavy flows that matter in fulfillment systems: rate shopping, tracking lookups, serviceability checks, and other hot-key workloads where latency and downstream stability directly affect conversion and operations.
-
-The library keeps the API small, the failure modes explicit, and the concurrency behavior deliberate. The core value is simple: fast local reads, a shared Redis-backed L2, and stampede protection so 50 identical requests do not become 50 identical database or carrier API calls.
+A high-performance, production-ready two-tier caching library designed for high-throughput environments (e.g., logistics backends). It implements a local-first (L1) and shared-second (L2) strategy to minimize latency and protect downstream systems from cache stampedes.
 
 ## Quick Start
 
