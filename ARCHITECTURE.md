@@ -22,7 +22,8 @@
 +---------+  +------------------+
 | L1      |  | L2Backend        |
 |Memory   |  | - MemoryStubL2   |
-|Store    |  | - RedisL2        |
+|Store    |  | - FakeRedisL2    |
+|         |  | - RedisL2        |
 +---------+  +------------------+
      |
      v
@@ -76,13 +77,13 @@ Backends are async because they may involve network I/O.
 
 `RedisL2` uses `redis.asyncio`, JSON serialization, and a storage namespace prefix. All backend exceptions are translated into `L2UnavailableError`.
 
-### Memory Stub Implementation
-
-`MemoryStubL2` is the default in-process backend. It is optimized for zero-dependency usage and lightweight unit tests, and keeps the library usable without external infrastructure.
-
 ### Fake Redis Simulation
 
 `FakeRedisL2` is the Redis-like local simulator. It stores JSON-serialized bytes internally, can simulate network latency, and can inject connection failures. It is meant for demos and integration-style tests where developers want something closer to Redis behavior without running Redis itself.
+
+### Internal Default Fallback
+
+The package also contains an in-process fallback backend that is used when no explicit `l2_backend` is supplied. It keeps the library usable with zero setup, but it is intentionally not the primary backend story for this submission.
 
 ## Cache-Aside Flow
 

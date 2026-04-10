@@ -101,9 +101,9 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-### With FakeRedisL2 (Development, Demos, and Integration-Style Tests)
+### With FakeRedisL2 (Local Development and Submission Demo)
 
-`FakeRedisL2` is the "Redis-like local simulator" backend. It is designed for development, demos, and integration-style tests. Unlike `MemoryStubL2`, it JSON-serializes values on write and deserializes them on read, which means it catches serialization bugs that would otherwise stay hidden until a real Redis deployment.
+`FakeRedisL2` is the recommended local backend for this submission. It gives you a Redis-like experience without running Redis, while still preserving the JSON serialization boundary that matters in real deployments.
 
 ```python
 from shipsy_cache import FakeRedisL2, TieredCache
@@ -123,18 +123,18 @@ cache = TieredCache(
 )
 ```
 
-### Backend Selection Guide
+### Recommended Backend Choices
 
-Use the backends by role rather than by "database count":
+For the submission and local development story, there are really two backends to think about:
 
-- `MemoryStubL2`: "default in-process backend" for zero-dependency usage and lightweight unit tests.
-- `FakeRedisL2`: "Redis-like local simulator" for demos and tests that should cross a JSON serialization boundary and optionally simulate latency or failures.
-- `RedisL2`: "production shared backend" for real multi-instance deployments.
+- `FakeRedisL2`: use this locally, in demos, and in high-fidelity tests.
+- `RedisL2`: use this for a real shared backend in production.
+
+`TieredCache` can also fall back to an internal in-process backend when `l2_backend=None`, but that is an implementation detail rather than the primary story of the library.
 
 ```python
-from shipsy_cache import FakeRedisL2, MemoryStubL2, RedisL2
+from shipsy_cache import FakeRedisL2, RedisL2
 
-default_local_backend = MemoryStubL2()
 redis_like_local_backend = FakeRedisL2(namespace="demo", latency_ms=5.0, failure_rate=0.0)
 production_shared_backend = RedisL2(
     host="localhost",
@@ -224,7 +224,7 @@ The demo covers:
 - L2 → L1 hydration: simulating multi-instance deployment
 - Event observability: full event stream display
 
-The demo uses `FakeRedisL2` — no Docker, no Redis, no external services.
+The demo uses `FakeRedisL2` as the single local/demo backend — no Docker, no Redis, no external services.
 
 ## Running Tests
 
@@ -300,7 +300,7 @@ FakeRedisL2(
 )
 ```
 
-In-process Redis simulator with JSON serialization, TTL support, configurable latency, and failure injection. Use for development, demos, and integration tests without a running Redis server.
+In-process Redis simulator with JSON serialization, TTL support, configurable latency, and failure injection. Use this as the primary local/demo backend when you want Redis-like behavior without a running Redis server.
 
 ## Architecture
 
@@ -310,13 +310,12 @@ L1 is a bounded `OrderedDict`-backed LRU with lazy TTL eviction and `threading.L
 
 ### L2 — Pluggable Backend
 
-L2 is an async interface. The library ships with three implementations: `MemoryStubL2` for unit tests, `FakeRedisL2` for integration tests and demos (with JSON serialization and configurable latency), and `RedisL2` for production deployments.
+L2 is an async interface. For the purpose of understanding this library quickly, the important two backends are:
 
-If you prefer plain-language naming:
+- `FakeRedisL2` for local development, demos, and high-fidelity testing
+- `RedisL2` for production deployments
 
-- `MemoryStubL2` = default in-process backend
-- `FakeRedisL2` = Redis-like local simulator
-- `RedisL2` = production shared backend
+The package also contains an internal in-process fallback used when no explicit L2 backend is supplied, but that fallback is not the main submission story.
 
 ### Cache-Aside Flow
 
