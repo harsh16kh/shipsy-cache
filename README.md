@@ -139,7 +139,6 @@ With `TieredCache.getOrSet()`:
 
 - **TTL** controls freshness.
 - **Grace period** is a fallback window after expiry.
-- **Why this matters for logistics**: if a carrier rate API briefly fails, serving a slightly stale rate is often better than breaking checkout.
 
 ## API Reference
 
