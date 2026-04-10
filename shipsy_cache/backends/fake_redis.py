@@ -1,15 +1,17 @@
-"""In-process Redis simulator for demos and integration-style testing.
+"""In-process Redis simulation for demos and integration-style tests.
 
-``FakeRedisL2`` is meant for local development, demos, and tests where teams
-want Redis-like behavior without running an external Redis service. Unlike
-``MemoryStubL2``, this backend enforces a JSON serialization boundary and stores
-serialized bytes internally, which makes it useful for catching bugs that only
-show up with real Redis-backed caching.
+``FakeRedisL2`` gives developers Redis-like behavior without running an
+external Redis container. It differs from ``MemoryStubL2`` in one important
+way: ``MemoryStubL2`` stores Python objects directly with no serialization,
+which is ideal for very fast unit tests where zero overhead and exact object
+identity matter. ``FakeRedisL2`` JSON-serializes values on write and
+deserializes them on read, which catches non-serializable payloads and more
+closely mirrors real Redis behavior.
 
-Use ``MemoryStubL2`` when you want very lightweight unit tests with minimal
-overhead and exact Python object identity semantics. Use ``FakeRedisL2`` when
-you want integration-style tests and demos that simulate Redis latency, JSON
-serialization, TTL behavior, and even intermittent backend failures.
+Choose ``MemoryStubL2`` for lightweight unit tests and straightforward local
+usage. Choose ``FakeRedisL2`` for demos, integration-style tests, and failure
+mode exercises where simulated latency, a serialization boundary, and injected
+connection failures provide more realistic behavior.
 """
 
 from __future__ import annotations
@@ -54,8 +56,8 @@ class FakeRedisL2(L2Backend):
         self._failure_rate = failure_rate
         self._store: Dict[str, Tuple[bytes, Optional[float]]] = {}
         self._lock = asyncio.Lock()
-        self._total_operations = 0
-        self._simulated_failures = 0
+        self._op_count = 0
+        self._failure_count = 0
 
     async def get(self, key: str) -> Optional[Any]:
         """Return the cached value for ``key`` or ``None``.
@@ -70,9 +72,9 @@ class FakeRedisL2(L2Backend):
             ConnectionError: When failure simulation triggers.
         """
 
-        await self._apply_latency()
+        self._op_count += 1
         self._maybe_fail("get")
-        self._total_operations += 1
+        await self._apply_latency()
 
         prefixed_key = self._prefix(key)
         async with self._lock:
@@ -87,13 +89,13 @@ class FakeRedisL2(L2Backend):
 
             return json.loads(raw_value)
 
-    async def set(self, key: str, value: Any, ttl_seconds: float) -> None:
+    async def set(self, key: str, value: Any, ttl_seconds: Optional[float] = None) -> None:
         """Store a JSON-serializable value under ``key``.
 
         Args:
             key: Logical cache key supplied by the caller.
             value: JSON-serializable value to store.
-            ttl_seconds: Time to live in seconds.
+            ttl_seconds: Optional time to live in seconds.
 
         Raises:
             ConnectionError: When failure simulation triggers.
@@ -101,12 +103,12 @@ class FakeRedisL2(L2Backend):
             ValueError: If JSON serialization fails.
         """
 
-        await self._apply_latency()
+        self._op_count += 1
         self._maybe_fail("set")
-        self._total_operations += 1
+        await self._apply_latency()
 
         payload = json.dumps(value).encode("utf-8")
-        expire_at = time.monotonic() + ttl_seconds
+        expire_at = time.monotonic() + ttl_seconds if ttl_seconds else None
         async with self._lock:
             self._store[self._prefix(key)] = (payload, expire_at)
 
@@ -120,9 +122,9 @@ class FakeRedisL2(L2Backend):
             ConnectionError: When failure simulation triggers.
         """
 
-        await self._apply_latency()
+        self._op_count += 1
         self._maybe_fail("delete")
-        self._total_operations += 1
+        await self._apply_latency()
 
         async with self._lock:
             self._store.pop(self._prefix(key), None)
@@ -157,8 +159,8 @@ class FakeRedisL2(L2Backend):
             "total_keys": total_keys,
             "live_keys": live_keys,
             "expired_pending_eviction": total_keys - live_keys,
-            "total_operations": self._total_operations,
-            "simulated_failures": self._simulated_failures,
+            "total_operations": self._op_count,
+            "simulated_failures": self._failure_count,
         }
 
     async def _apply_latency(self) -> None:
@@ -171,7 +173,7 @@ class FakeRedisL2(L2Backend):
         """Raise a simulated connection failure when configured."""
 
         if self._failure_rate > 0 and random.random() < self._failure_rate:
-            self._simulated_failures += 1
+            self._failure_count += 1
             raise ConnectionError(
                 f"FakeRedisL2: simulated connection failure on {operation}",
             )

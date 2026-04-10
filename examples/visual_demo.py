@@ -1,11 +1,13 @@
-"""Visual demonstration of the Shipsy Cache Library.
+"""Shipsy Cache Library — Visual Demo
 
-Uses Rich for terminal UI — install with: pip install rich
-Uses FakeRedisL2 so no external services are needed.
+A rich terminal demonstration of every library feature using logistics-realistic
+data. Uses FakeRedisL2 so no external services are needed.
 
-Run:
+Install and run:
     pip install rich
     python examples/visual_demo.py
+
+If rich is not installed, the demo will print a helpful error message.
 """
 
 from __future__ import annotations
@@ -16,203 +18,98 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
-from statistics import mean
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-try:
-    from rich.console import Console
-    from rich.live import Live
-    from rich.panel import Panel
-    from rich.progress import Progress, SpinnerColumn, TextColumn
-    from rich.rule import Rule
-    from rich.table import Table
-    from rich.text import Text
-
-    RICH_AVAILABLE = True
-except ImportError:  # pragma: no cover - exercised manually
-    Console = Live = Panel = Progress = Rule = Table = Text = SpinnerColumn = TextColumn = None
-    RICH_AVAILABLE = False
-
-from shipsy_cache import FactoryError, FakeRedisL2, TieredCache
+from shipsy_cache import FakeRedisL2, FactoryError, TieredCache
 
 
-CARRIERS: Dict[str, Dict[str, Any]] = {
-    "delhivery": {"base_rate": 45.0, "per_kg": 12.5, "avg_days": 3, "currency": "INR"},
-    "bluedart": {"base_rate": 65.0, "per_kg": 18.0, "avg_days": 2, "currency": "INR"},
-    "dtdc": {"base_rate": 38.0, "per_kg": 10.0, "avg_days": 4, "currency": "INR"},
-    "ecom_express": {"base_rate": 42.0, "per_kg": 11.5, "avg_days": 3, "currency": "INR"},
-    "xpressbees": {"base_rate": 40.0, "per_kg": 11.0, "avg_days": 3, "currency": "INR"},
-    "shadowfax": {"base_rate": 35.0, "per_kg": 9.5, "avg_days": 5, "currency": "INR"},
+CARRIERS: Dict[str, Dict[str, float]] = {
+    "delhivery": {"base": 45.0, "per_kg": 12.5, "avg_days": 3},
+    "bluedart": {"base": 65.0, "per_kg": 18.0, "avg_days": 2},
+    "dtdc": {"base": 38.0, "per_kg": 10.0, "avg_days": 4},
+    "ecom_express": {"base": 42.0, "per_kg": 11.5, "avg_days": 3},
+    "xpressbees": {"base": 40.0, "per_kg": 11.0, "avg_days": 3},
+    "shadowfax": {"base": 35.0, "per_kg": 9.5, "avg_days": 5},
 }
-
-SAMPLE_AWBS = [
-    "AWB-DEL-78234",
-    "AWB-BLR-91456",
-    "AWB-MUM-33210",
-    "AWB-HYD-55678",
-    "AWB-CHN-12890",
-]
 
 SHIPMENT_STATUSES = [
     "manifested",
     "picked_up",
-    "in_transit_to_hub",
-    "at_origin_hub",
     "in_transit",
-    "at_destination_hub",
+    "at_hub",
     "out_for_delivery",
     "delivered",
     "rto_initiated",
-    "rto_in_transit",
     "rto_delivered",
 ]
 
-SAMPLE_PINCODES = ["110001", "560034", "400001", "500032", "600001", "700001"]
-SAMPLE_CITIES = ["Delhi", "Bengaluru", "Mumbai", "Hyderabad", "Chennai", "Kolkata"]
+HIT_STYLE = "bold green"
+MISS_STYLE = "bold red"
+STALE_STYLE = "bold yellow"
+L1_STYLE = "cyan"
+L2_STYLE = "magenta"
+ERROR_STYLE = "bold red"
+KEY_STYLE = "blue"
+LATENCY_STYLE = "dim"
 
 
-async def fetch_carrier_rate(
-    carrier: str,
-    origin: str,
-    dest: str,
-    weight_kg: float,
-) -> Dict[str, Any]:
-    """Simulate fetching a carrier rate from an external API."""
+async def fetch_carrier_rate(carrier: str, origin: str, dest: str, weight: float) -> Dict[str, Any]:
+    """Simulate a carrier rate API call."""
 
-    await asyncio.sleep(random.uniform(0.15, 0.35))
-    carrier_data = CARRIERS[carrier]
-    total = carrier_data["base_rate"] + (carrier_data["per_kg"] * weight_kg)
+    await asyncio.sleep(random.uniform(0.15, 0.30))
+    info = CARRIERS[carrier]
     return {
         "carrier": carrier,
-        "origin": origin,
-        "dest": dest,
-        "weight_kg": weight_kg,
-        "base_rate": carrier_data["base_rate"],
-        "per_kg_rate": carrier_data["per_kg"],
-        "total": round(total, 2),
-        "currency": carrier_data["currency"],
-        "fetched_at": time.time(),
+        "route": f"{origin}→{dest}",
+        "weight_kg": weight,
+        "total": round(info["base"] + info["per_kg"] * weight, 2),
+        "currency": "INR",
+        "eta_days": int(info["avg_days"]),
     }
 
 
 async def fetch_tracking(awb: str) -> Dict[str, Any]:
-    """Simulate a tracking service lookup."""
+    """Simulate a tracking service call."""
 
     await asyncio.sleep(random.uniform(0.08, 0.20))
     return {
         "awb": awb,
         "status": random.choice(SHIPMENT_STATUSES),
-        "location": random.choice(SAMPLE_CITIES),
-        "updated_at": time.time(),
-        "carrier": random.choice(list(CARRIERS.keys())),
-    }
-
-
-async def fetch_serviceability(pincode: str) -> Dict[str, Any]:
-    """Simulate a pincode serviceability lookup."""
-
-    await asyncio.sleep(random.uniform(0.10, 0.25))
-    serviceable = sum(ord(char) for char in pincode) % 2 == 0
-    carrier_count = max(2, (sum(ord(char) for char in pincode) % len(CARRIERS)) + 1)
-    available_carriers = list(CARRIERS.keys())[:carrier_count] if serviceable else []
-    return {
-        "pincode": pincode,
-        "serviceable": serviceable,
-        "available_carriers": available_carriers,
-        "checked_at": time.time(),
+        "location": random.choice(
+            ["Delhi Hub", "Mumbai Sort", "Bangalore DC", "Hyderabad Hub"],
+        ),
     }
 
 
 async def fetch_merchant_config(merchant_id: str) -> Dict[str, Any]:
-    """Simulate a slow merchant configuration service."""
+    """Simulate a merchant configuration service call."""
 
     await asyncio.sleep(random.uniform(0.20, 0.40))
-    preferred_carriers = random.sample(list(CARRIERS.keys()), k=3)
     return {
         "merchant_id": merchant_id,
-        "delivery_sla_hours": random.choice([24, 36, 48, 72]),
-        "rto_window_days": random.choice([5, 7, 10, 14]),
-        "preferred_carriers": preferred_carriers,
-        "auto_allocate": random.choice([True, False]),
-        "updated_at": time.time(),
+        "delivery_sla_hours": 48,
+        "rto_window_days": 7,
+        "preferred_carriers": ["delhivery", "bluedart"],
     }
 
 
 def format_ms(seconds: float) -> str:
-    """Format a duration in milliseconds."""
+    """Return a duration formatted in milliseconds."""
 
-    return f"{seconds * 1000:.2f} ms"
-
-
-def format_currency(amount: float) -> str:
-    """Format a rupee amount."""
-
-    return f"₹{amount:.2f}"
+    return f"{seconds * 1000:.0f}ms"
 
 
-def event_style(event_name: str) -> str:
-    """Return the Rich style for an event type."""
+def format_ms_precise(seconds: float) -> str:
+    """Return a duration formatted in milliseconds with one decimal place."""
 
-    styles = {
-        "cache:hit": "bold green",
-        "cache:miss": "bold red",
-        "cache:set": "bold blue",
-        "cache:invalidate": "bold yellow",
-        "cache:stale-served": "bold yellow",
-    }
-    return styles.get(event_name, "white")
-
-
-def status_from_events(events: List[Dict[str, Any]]) -> Any:
-    """Build a colored Rich status indicator from actual event payloads."""
-
-    hit_event = next((event for event in events if event["event"] == "cache:hit"), None)
-    stale_event = next((event for event in events if event["event"] == "cache:stale-served"), None)
-    miss_event = next((event for event in events if event["event"] == "cache:miss"), None)
-
-    if stale_event is not None:
-        return Text("STALE", style="bold yellow")
-    if hit_event is not None:
-        tier = hit_event.get("tier", "-")
-        tier_style = "cyan" if tier == "L1" else "magenta"
-        text = Text("HIT", style="bold green")
-        text.append(" ")
-        text.append(f"({tier})", style=tier_style)
-        return text
-    if miss_event is not None:
-        return Text("MISS", style="bold red")
-    return Text("UNKNOWN", style="white")
-
-
-def build_rate_table(title: str, rows: List[Tuple[str, float, float, Any]]) -> Any:
-    """Build a Rich table for rate-shopping output."""
-
-    table = Table(title=title, expand=True)
-    table.add_column("Carrier", style="blue")
-    table.add_column("Rate (₹)", justify="right")
-    table.add_column("Latency", justify="right", style="dim")
-    table.add_column("Cache Status")
-    for carrier, amount, latency, cache_status in rows:
-        table.add_row(carrier, format_currency(amount), format_ms(latency), cache_status)
-    return table
-
-
-def build_key_value_table(title: str, payload: Dict[str, Any]) -> Any:
-    """Build a small key/value table for structured payloads."""
-
-    table = Table(title=title, expand=True)
-    table.add_column("Field", style="blue")
-    table.add_column("Value")
-    for key, value in payload.items():
-        table.add_row(str(key), str(value))
-    return table
+    return f"{seconds * 1000:.1f}ms"
 
 
 def attach_event_listeners(cache: TieredCache, event_log: List[Dict[str, Any]]) -> None:
-    """Capture actual cache event payloads for real-time visualization."""
+    """Attach cache listeners that record the real event payloads."""
 
     def listener(payload: Dict[str, Any]) -> None:
         event_log.append(dict(payload))
@@ -227,525 +124,524 @@ def attach_event_listeners(cache: TieredCache, event_log: List[Dict[str, Any]]) 
         cache.on(event_name, listener)
 
 
-async def scenario_rate_shopping(console: Any, cache: TieredCache, event_log: List[Dict[str, Any]]) -> None:
-    """Scenario 1: cold versus warm rate shopping."""
+def event_type_style(event_name: str) -> str:
+    """Return the visual style for an event type."""
+
+    styles = {
+        "cache:hit": HIT_STYLE,
+        "cache:miss": MISS_STYLE,
+        "cache:set": "bold blue",
+        "cache:invalidate": STALE_STYLE,
+        "cache:stale-served": STALE_STYLE,
+    }
+    return styles.get(event_name, "white")
+
+
+def status_from_events(events: List[Dict[str, Any]], text_cls: Any) -> Any:
+    """Build a status label from actual event payloads."""
+
+    hit = next((event for event in events if event["event"] == "cache:hit"), None)
+    stale = next((event for event in events if event["event"] == "cache:stale-served"), None)
+    miss = next((event for event in events if event["event"] == "cache:miss"), None)
+    if stale is not None:
+        return text_cls("STALE", style=STALE_STYLE)
+    if hit is not None:
+        tier = hit.get("tier")
+        tier_style = L1_STYLE if tier == "L1" else L2_STYLE
+        label = text_cls("HIT", style=HIT_STYLE)
+        if tier is not None:
+            label.append(" ")
+            label.append(f"({tier})", style=tier_style)
+        return label
+    if miss is not None:
+        return text_cls("MISS", style=MISS_STYLE)
+    return text_cls("—", style="white")
+
+
+def source_from_events(events: List[Dict[str, Any]]) -> str:
+    """Infer the cache source from actual hit events."""
+
+    for event in events:
+        if event["event"] == "cache:hit":
+            return str(event.get("tier", "unknown"))
+    return "unknown"
+
+
+def payload_table(table_cls: Any, box_mod: Any, title: str, payload: Dict[str, Any]) -> Any:
+    """Render a small key-value payload table."""
+
+    table = table_cls(title=title, box=box_mod.SIMPLE_HEAVY, expand=True)
+    table.add_column("Field", style=KEY_STYLE)
+    table.add_column("Value")
+    for key, value in payload.items():
+        table.add_row(str(key), str(value))
+    return table
+
+
+async def scenario_rate_shopping(
+    console: Any,
+    ui: Dict[str, Any],
+    cache: TieredCache,
+    event_log: List[Dict[str, Any]],
+) -> None:
+    """Show cold versus warm carrier rate shopping."""
+
+    table_cls = ui["Table"]
+    panel_cls = ui["Panel"]
+    text_cls = ui["Text"]
+    box_mod = ui["box"]
 
     console.print(
-        Panel.fit(
-            "SCENARIO 1: Rate Shopping for Route DEL → BLR (2.5 kg)",
-            title="Scenario",
-            border_style="cyan",
+        panel_cls.fit(
+            "🚚 Scenario 1: Rate Shopping — Route DEL → BLR (2.5 kg)",
+            border_style=L2_STYLE,
         ),
     )
 
-    cold_rows: List[Tuple[str, float, float, Any]] = []
-    cold_results: List[Dict[str, Any]] = []
+    def make_table(title: str) -> Any:
+        table = table_cls(title=title, box=box_mod.SIMPLE_HEAVY, expand=True)
+        table.add_column("Carrier", style=KEY_STYLE)
+        table.add_column("Total (₹)", justify="right")
+        table.add_column("ETA", justify="right")
+        table.add_column("Latency", justify="right", style=LATENCY_STYLE)
+        table.add_column("Status")
+        return table
+
+    cold_table = make_table("Cold Fetch")
     cold_total = 0.0
+    cheapest_carrier = ""
+    cheapest_amount = float("inf")
 
-    with Live(build_rate_table("Cold Fetch", cold_rows), console=console, refresh_per_second=8, transient=True) as live:
-        for carrier in CARRIERS:
-            key = f"rate:{carrier}:DEL:BLR:2.5"
-            event_index = len(event_log)
-            start = time.perf_counter()
-            result = await cache.getOrSet(
-                key,
-                lambda carrier_name=carrier: fetch_carrier_rate(carrier_name, "DEL", "BLR", 2.5),
-                ttl="15m",
-            )
-            latency = time.perf_counter() - start
-            cold_total += latency
-            cold_results.append(result)
-            cold_rows.append(
-                (
-                    carrier,
-                    result["total"],
-                    latency,
-                    status_from_events(event_log[event_index:]),
-                ),
-            )
-            live.update(build_rate_table("Cold Fetch", cold_rows))
+    for carrier in CARRIERS:
+        key = f"rate:{carrier}:DEL:BLR"
+        event_index = len(event_log)
+        start = time.perf_counter()
+        result = await cache.getOrSet(
+            key,
+            lambda carrier_name=carrier: fetch_carrier_rate(carrier_name, "DEL", "BLR", 2.5),
+            ttl="15m",
+        )
+        elapsed = time.perf_counter() - start
+        cold_total += elapsed
+        cheapest_carrier, cheapest_amount = (
+            (result["carrier"], result["total"])
+            if result["total"] < cheapest_amount
+            else (cheapest_carrier, cheapest_amount)
+        )
+        cold_table.add_row(
+            carrier,
+            f"{result['total']:.2f}",
+            f"{result['eta_days']}d",
+            format_ms(elapsed),
+            status_from_events(event_log[event_index:], text_cls),
+        )
 
-    cheapest = min(cold_results, key=lambda item: item["total"])
-    console.print(build_rate_table("Cold Fetch", cold_rows))
+    console.print(cold_table)
     console.print(
-        Panel(
-            f"Cheapest: [bold green]{cheapest['carrier']}[/bold green] @ "
-            f"[bold]{format_currency(cheapest['total'])}[/bold]\n"
-            f"Total cold fetch time: [dim]{format_ms(cold_total)}[/dim]",
+        panel_cls(
+            f"Total: [dim]{format_ms(cold_total)}[/dim] | "
+            f"Cheapest: [bold green]{cheapest_carrier}[/bold green] @ "
+            f"[bold]₹{cheapest_amount:.2f}[/bold]",
             border_style="green",
         ),
     )
 
-    warm_rows: List[Tuple[str, float, float, Any]] = []
+    warm_table = make_table("Warm Fetch")
     warm_total = 0.0
-    with Live(build_rate_table("Warm Fetch", warm_rows), console=console, refresh_per_second=8, transient=True) as live:
-        for carrier in CARRIERS:
-            key = f"rate:{carrier}:DEL:BLR:2.5"
-            event_index = len(event_log)
-            start = time.perf_counter()
-            result = await cache.getOrSet(
-                key,
-                lambda carrier_name=carrier: fetch_carrier_rate(carrier_name, "DEL", "BLR", 2.5),
-                ttl="15m",
-            )
-            latency = time.perf_counter() - start
-            warm_total += latency
-            warm_rows.append(
-                (
-                    carrier,
-                    result["total"],
-                    latency,
-                    status_from_events(event_log[event_index:]),
-                ),
-            )
-            live.update(build_rate_table("Warm Fetch", warm_rows))
+    for carrier in CARRIERS:
+        key = f"rate:{carrier}:DEL:BLR"
+        event_index = len(event_log)
+        start = time.perf_counter()
+        result = await cache.getOrSet(
+            key,
+            lambda carrier_name=carrier: fetch_carrier_rate(carrier_name, "DEL", "BLR", 2.5),
+            ttl="15m",
+        )
+        elapsed = time.perf_counter() - start
+        warm_total += elapsed
+        warm_table.add_row(
+            carrier,
+            f"{result['total']:.2f}",
+            f"{result['eta_days']}d",
+            format_ms_precise(elapsed),
+            status_from_events(event_log[event_index:], text_cls),
+        )
 
-    console.print(build_rate_table("Warm Fetch", warm_rows))
-    speedup = cold_total / warm_total if warm_total > 0 else 0.0
+    console.print(warm_table)
+    speedup = cold_total / warm_total if warm_total else 0.0
     console.print(
-        Panel(
-            f"Total warm fetch time: [dim]{format_ms(warm_total)}[/dim]\n"
-            f"Speedup: [bold green]{speedup:.0f}x[/bold green]",
+        panel_cls(
+            f"Total: [dim]{format_ms_precise(warm_total)}[/dim] | "
+            f"Speedup: [bold green]{speedup:.0f}×[/bold green]",
             border_style="green",
         ),
     )
 
 
-async def scenario_stampede(console: Any, cache: TieredCache) -> None:
-    """Scenario 2: stampede protection with 50 concurrent requests."""
+async def scenario_stampede(console: Any, ui: Dict[str, Any], cache: TieredCache) -> None:
+    """Show stampede protection under high concurrency."""
+
+    table_cls = ui["Table"]
+    panel_cls = ui["Panel"]
+    text_cls = ui["Text"]
+    box_mod = ui["box"]
 
     console.print(
-        Panel.fit(
-            "SCENARIO 2: Stampede Protection — 50 concurrent tracking requests for AWB-DEL-78234",
-            title="Scenario",
-            border_style="cyan",
+        panel_cls.fit(
+            "🛡️ Scenario 2: Stampede Protection — 50 requests for AWB-DEL-78234",
+            border_style=L2_STYLE,
         ),
     )
-    console.print("Firing 50 concurrent requests for the same cold key...")
 
     key = "tracking:AWB-DEL-78234"
     await cache.invalidate(key)
     factory_calls = 0
+    latencies: List[float] = []
 
-    async def tracking_factory() -> Dict[str, Any]:
+    async def factory() -> Dict[str, Any]:
         nonlocal factory_calls
         factory_calls += 1
         return await fetch_tracking("AWB-DEL-78234")
 
-    latencies: List[float] = []
-    results: List[Dict[str, Any]] = []
-
-    progress = Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        TextColumn("{task.completed}/{task.total}"),
-        console=console,
-    )
-
-    async def worker(task_id: Any) -> Dict[str, Any]:
+    async def worker() -> Dict[str, Any]:
         start = time.perf_counter()
-        result = await cache.getOrSet(key, tracking_factory, ttl="45s")
+        result = await cache.getOrSet(key, factory, ttl="30s")
         latencies.append(time.perf_counter() - start)
-        progress.advance(task_id, 1)
         return result
 
-    with progress:
-        task_id = progress.add_task("Concurrent tracking requests", total=50)
-        results = await asyncio.gather(*(worker(task_id) for _ in range(50)))
+    results = await asyncio.gather(*(worker() for _ in range(50)))
+    all_match = len({repr(result) for result in results}) == 1
+    leader_latency = max(latencies)
+    follower_latencies = [latency for latency in latencies if latency != leader_latency]
+    avg_follower = sum(follower_latencies) / len(follower_latencies) if follower_latencies else 0.0
 
-    all_identical = len({repr(result) for result in results}) == 1
-    leader_time = max(latencies)
-    follower_times = [latency for latency in latencies if latency != leader_time]
-    follower_average = mean(follower_times) if follower_times else 0.0
-    summary_style = "bold green" if factory_calls == 1 and all_identical else "bold red on white"
+    table = table_cls(box=box_mod.SIMPLE_HEAVY, expand=True)
+    table.add_column("Metric", style=KEY_STYLE)
+    table.add_column("Value")
+    table.add_row("Concurrent requests", "50")
+    table.add_row(
+        "Factory invocations",
+        text_cls(
+            f"{factory_calls} {'✓' if factory_calls == 1 else '✗'}",
+            style=HIT_STYLE if factory_calls == 1 else ERROR_STYLE,
+        ),
+    )
+    table.add_row("All results match", text_cls("✓" if all_match else "✗", style=HIT_STYLE if all_match else ERROR_STYLE))
+    table.add_row("Leader latency", format_ms(leader_latency))
+    table.add_row("Avg follower wait", format_ms_precise(avg_follower))
+    console.print(table)
+
+
+async def scenario_ttl_lifecycle(console: Any, ui: Dict[str, Any], cache: TieredCache) -> None:
+    """Show a live TTL lifecycle for a tracking entry."""
+
+    table_cls = ui["Table"]
+    panel_cls = ui["Panel"]
+    live_cls = ui["Live"]
+    text_cls = ui["Text"]
+    box_mod = ui["box"]
+
     console.print(
-        Panel(
-            f"Factory invocations: [{summary_style}]{factory_calls}[/]\n"
-            f"Requests served: [bold]{len(results)}[/bold]\n"
-            f"All results identical: [{'bold green' if all_identical else 'bold red'}]"
-            f"{'✓' if all_identical else '✗'}[/]\n"
-            f"Leader fetch time: [dim]{format_ms(leader_time)}[/dim]\n"
-            f"Follower wait time (avg): [dim]{format_ms(follower_average)}[/dim]",
-            border_style="green" if factory_calls == 1 and all_identical else "red",
+        panel_cls.fit(
+            "⏱️ Scenario 3: TTL Expiry — 2s TTL lifecycle",
+            border_style=L2_STYLE,
         ),
     )
 
+    key = "tracking:ttl:AWB-DEL-78234"
+    value = await fetch_tracking("AWB-DEL-78234")
+    await cache.set(key, value, ttl="2s")
 
-async def scenario_ttl_expiry(console: Any, cache: TieredCache) -> None:
-    """Scenario 3: live TTL expiry countdown."""
-
-    console.print(
-        Panel.fit(
-            "SCENARIO 3: TTL Expiry — Tracking data with 2s TTL",
-            title="Scenario",
-            border_style="cyan",
-        ),
-    )
-
-    key = "tracking:ttl-demo:AWB-BLR-91456"
-    await cache.set(key, await fetch_tracking("AWB-BLR-91456"), ttl="2s")
-
+    rows: List[Tuple[str, str, Any]] = []
     checkpoints = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5]
-    start = time.perf_counter()
 
-    with Live(console=console, refresh_per_second=8, transient=True) as live:
-        for target in checkpoints:
-            wait_for = target - (time.perf_counter() - start)
-            if wait_for > 0:
-                await asyncio.sleep(wait_for)
+    with live_cls(console=console, refresh_per_second=8, transient=True) as live:
+        start = time.perf_counter()
+        for checkpoint in checkpoints:
+            remaining = checkpoint - (time.perf_counter() - start)
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+            result = await cache.get(key)
+            if result is None:
+                status = text_cls("🔴 EXPIRED", style=MISS_STYLE)
+            elif checkpoint >= 1.5:
+                status = text_cls("🟡 EXPIRING SOON", style=STALE_STYLE)
+            else:
+                status = text_cls("🟢 FRESH", style=HIT_STYLE)
+            rows.append((f"{checkpoint:.1f}s", str(result), status))
 
-            value = await cache.get(key)
-            status = Text("FRESH", style="bold green") if value is not None else Text("EXPIRED", style="bold red")
-            table = Table(title="Tracking TTL Lifecycle", expand=True)
+            table = table_cls(box=box_mod.SIMPLE_HEAVY, expand=True)
             table.add_column("Elapsed")
-            table.add_column("Key", style="blue")
+            table.add_column("cache.get() result")
             table.add_column("Status")
-            table.add_column("Value")
-            table.add_row(f"{target:.1f}s", key, status, str(value))
+            for row in rows:
+                table.add_row(row[0], row[1], row[2])
             live.update(table)
 
-    final_value = await cache.get(key)
     console.print(
-        Panel(
-            f"Key [blue]{key}[/blue] expired as expected.\n"
-            f"Final value after countdown: [bold]{final_value}[/bold]",
+        panel_cls(
+            "Tracking data stayed fresh until the TTL expired, then aged out cleanly.",
             border_style="green",
         ),
     )
 
 
-async def scenario_graceful_degradation(console: Any, cache: TieredCache) -> None:
-    """Scenario 4: graceful degradation with stale serving."""
+async def scenario_graceful_degradation(
+    console: Any,
+    ui: Dict[str, Any],
+    cache: TieredCache,
+    l2: FakeRedisL2,
+) -> None:
+    """Show stale serving during a simulated carrier outage."""
+
+    panel_cls = ui["Panel"]
+    live_cls = ui["Live"]
+    table_cls = ui["Table"]
+    box_mod = ui["box"]
 
     console.print(
-        Panel.fit(
-            "SCENARIO 4: Graceful Degradation — BlueDart API goes down",
-            title="Scenario",
-            border_style="cyan",
+        panel_cls.fit(
+            "🔥 Scenario 4: Graceful Degradation — BlueDart API goes down",
+            border_style=L2_STYLE,
         ),
     )
 
     key = "rate:bluedart:DEL:BLR"
-    prepopulated = await fetch_carrier_rate("bluedart", "DEL", "BLR", 2.5)
-    await cache.set(key, prepopulated, ttl=1.5)
-    console.print(build_key_value_table("Pre-populated BlueDart rate", prepopulated))
+    value = await fetch_carrier_rate("bluedart", "DEL", "BLR", 2.5)
+    console.print("Setting BlueDart rate with TTL=1.5s, grace_period=30s")
+    await cache.set(key, value, ttl=1.5)
+    console.print(payload_table(table_cls, box_mod, "Cached BlueDart Rate", value))
 
-    progress = Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-        transient=True,
-    )
-    with progress:
-        task_id = progress.add_task("Waiting for TTL to expire...", total=20)
-        for _ in range(20):
-            await asyncio.sleep(0.1)
-            progress.advance(task_id, 1)
+    console.print("Waiting for TTL to expire...")
+    with live_cls(console=console, refresh_per_second=8, transient=True) as live:
+        for remaining in (2.0, 1.5, 1.0, 0.5):
+            table = table_cls(box=box_mod.SIMPLE_HEAVY, expand=False)
+            table.add_column("Countdown")
+            table.add_row(f"{remaining:.1f}s remaining")
+            live.update(table)
+            await asyncio.sleep(0.5)
 
     async def broken_factory() -> Dict[str, Any]:
-        raise ConnectionError("BlueDart rate API: connection refused")
+        raise ConnectionError("BlueDart API: connection refused")
 
     stale_value = await cache.getOrSet(key, broken_factory, ttl="15m")
     console.print(
-        Panel(
-            "⚠ STALE VALUE SERVED\n\n"
-            "The factory failed, but the grace period saved us. The caller got\n"
-            "slightly outdated data instead of an error. In logistics, a rate\n"
-            "from 2 seconds ago is infinitely better than crashing the checkout.",
+        panel_cls(
+            "⚠️  STALE VALUE SERVED\n"
+            "The factory failed but the grace period returned the last known rate.\n"
+            "In logistics, a 2-second-old rate is better than a crashed checkout.",
             border_style="yellow",
-            style="yellow",
         ),
     )
-    console.print(build_key_value_table("Stale BlueDart rate", stale_value))
+    console.print(payload_table(table_cls, box_mod, "Returned Stale Value", stale_value))
 
-    no_grace_l2 = FakeRedisL2(namespace="shipsy_demo_no_grace", latency_ms=5)
     no_grace_cache = TieredCache(
-        l2_backend=no_grace_l2,
+        l2_backend=l2,
+        l1_max_size=50,
         default_ttl="10m",
         grace_period=0,
         namespace="logistics-no-grace",
     )
-    no_grace_value = await fetch_carrier_rate("bluedart", "DEL", "BLR", 2.5)
-    await no_grace_cache.set(key, no_grace_value, ttl=1.5)
+    no_grace_key = "rate:bluedart:DEL:BLR"
+    await no_grace_cache.set(no_grace_key, value, ttl=1.5)
     await asyncio.sleep(2.0)
-
     try:
-        await no_grace_cache.getOrSet(key, broken_factory, ttl="15m")
+        await no_grace_cache.getOrSet(no_grace_key, broken_factory, ttl="15m")
     except FactoryError as exc:
+        cause = exc.__cause__
+        cause_message = str(cause) if cause is not None else str(exc)
         console.print(
-            Panel(
-                "Without grace period: FactoryError raised → checkout fails\n\n"
-                f"{exc}",
+            panel_cls(
+                "❌ ERROR — No grace period\n"
+                f"FactoryError: {cause_message}\n"
+                "Without graceful degradation, the checkout flow crashes.",
                 border_style="red",
-                style="bold red on white",
+                style=ERROR_STYLE,
             ),
         )
 
 
-async def scenario_l2_hydration(console: Any, cache: TieredCache, l2: FakeRedisL2) -> None:
-    """Scenario 5: shared L2 hydration into local L1."""
+async def scenario_l2_hydration(
+    console: Any,
+    ui: Dict[str, Any],
+    cache: TieredCache,
+    l2: FakeRedisL2,
+    event_log: List[Dict[str, Any]],
+) -> None:
+    """Show L2 to L1 hydration for a multi-instance style workflow."""
+
+    table_cls = ui["Table"]
+    panel_cls = ui["Panel"]
+    box_mod = ui["box"]
 
     console.print(
-        Panel.fit(
-            "SCENARIO 5: L2 → L1 Hydration (simulating a second service instance)",
-            title="Scenario",
-            border_style="cyan",
+        panel_cls.fit(
+            "🔄 Scenario 5: L2 → L1 Hydration (multi-instance simulation)",
+            border_style=L2_STYLE,
         ),
     )
     console.print(
-        Panel(
-            "In production, multiple service instances share the same Redis (L2).\n"
-            "When Instance B writes a value to Redis, Instance A should pick it up\n"
-            "on its next cache.get() — finding it in L2 and hydrating its local L1.",
-            border_style="magenta",
+        panel_cls(
+            "Simulating two service instances sharing Redis.\n"
+            "Instance B writes warehouse config directly to L2.\n"
+            "Instance A reads through TieredCache — finds it in L2, hydrates L1.",
+            border_style=L1_STYLE,
         ),
     )
 
-    key = "tracking:shared-instance:AWB-MUM-33210"
-    payload = await fetch_tracking("AWB-MUM-33210")
-    await cache.invalidate(key)
+    key = "warehouse:config"
+    payload = {
+        "warehouse_id": "WH-DEL-01",
+        "sort_cutoff": "18:30",
+        "supports_cod": True,
+    }
     await l2.set(cache._namespaced_key(key), payload, ttl_seconds=300)
 
-    console.print("Instance B → writes to L2 (Redis)")
-    console.print("Instance A → cache.get() → L1 miss → L2 hit → hydrate L1 → return")
-
+    first_event_index = len(event_log)
     start = time.perf_counter()
-    hydrated = await cache.get(key)
-    l2_latency = time.perf_counter() - start
+    first_value = await cache.get(key)
+    first_latency = time.perf_counter() - start
+    first_source = source_from_events(event_log[first_event_index:])
 
+    second_event_index = len(event_log)
     start = time.perf_counter()
-    l1_hit = await cache.get(key)
-    l1_latency = time.perf_counter() - start
+    second_value = await cache.get(key)
+    second_latency = time.perf_counter() - start
+    second_source = source_from_events(event_log[second_event_index:])
 
-    console.print(build_key_value_table("Hydrated value", hydrated))
+    table = table_cls(box=box_mod.SIMPLE_HEAVY, expand=True)
+    table.add_column("Read")
+    table.add_column("Source")
+    table.add_column("Latency", style=LATENCY_STYLE)
+    table.add_column("Value")
+    table.add_row("1st", first_source, format_ms_precise(first_latency), str(first_value))
+    table.add_row("2nd", second_source, format_ms_precise(second_latency), str(second_value))
+    console.print(table)
+
+
+async def scenario_event_stream(
+    console: Any,
+    ui: Dict[str, Any],
+    cache: TieredCache,
+    event_log: List[Dict[str, Any]],
+) -> None:
+    """Show the captured event stream for a deterministic sequence."""
+
+    table_cls = ui["Table"]
+    panel_cls = ui["Panel"]
+    text_cls = ui["Text"]
+    box_mod = ui["box"]
+
     console.print(
-        Panel(
-            f"L2 fetch: [magenta]{format_ms(l2_latency)}[/magenta] vs "
-            f"L1 fetch: [cyan]{format_ms(l1_latency)}[/cyan]\n"
-            f"Second read payload: {l1_hit}",
-            border_style="green",
+        panel_cls.fit(
+            "📡 Scenario 6: Event Stream",
+            border_style=L2_STYLE,
         ),
     )
 
-
-async def scenario_event_observability(console: Any, cache: TieredCache, event_log: List[Dict[str, Any]]) -> None:
-    """Scenario 6: show the full captured event stream."""
-
-    console.print(
-        Panel.fit(
-            "SCENARIO 6: Cache Event Stream",
-            title="Scenario",
-            border_style="cyan",
-        ),
-    )
-
+    key = "rate:delhivery:event-demo"
     start_index = len(event_log)
-    key = "events:merchant:demo"
+    await cache.getOrSet(
+        key,
+        lambda: fetch_carrier_rate("delhivery", "DEL", "BLR", 1.0),
+        ttl="15m",
+    )
+    await cache.getOrSet(
+        key,
+        lambda: fetch_carrier_rate("delhivery", "DEL", "BLR", 1.0),
+        ttl="15m",
+    )
     await cache.invalidate(key)
-    await cache.getOrSet(key, lambda: fetch_merchant_config("merchant-demo"), ttl="5m")
-    await cache.getOrSet(key, lambda: fetch_merchant_config("merchant-demo"), ttl="5m")
-    await cache.invalidate(key)
-    await cache.getOrSet(key, lambda: fetch_merchant_config("merchant-demo"), ttl="5m")
+    await cache.getOrSet(
+        key,
+        lambda: fetch_carrier_rate("delhivery", "DEL", "BLR", 1.0),
+        ttl="15m",
+    )
+
+    table = table_cls(box=box_mod.SIMPLE_HEAVY, expand=True)
+    table.add_column("#", justify="right")
+    table.add_column("Event Type")
+    table.add_column("Key", style=KEY_STYLE)
+    table.add_column("Details")
 
     scenario_events = event_log[start_index:]
-    table = Table(title="Captured Cache Events", expand=True)
-    table.add_column("#", justify="right")
-    table.add_column("Timestamp")
-    table.add_column("Event Type")
-    table.add_column("Key", style="blue")
-    table.add_column("Details")
     for index, event in enumerate(scenario_events, start=1):
-        details = ", ".join(f"{key}={value}" for key, value in event.items() if key not in {"event", "key", "timestamp"})
+        detail_parts = [
+            f"{name}={value}"
+            for name, value in event.items()
+            if name not in {"event", "key", "timestamp"}
+        ]
         table.add_row(
             str(index),
-            f"{event['timestamp']:.3f}",
-            Text(event["event"], style=event_style(event["event"])),
+            text_cls(event["event"], style=event_type_style(event["event"])),
             event["key"],
-            details or "-",
+            ", ".join(detail_parts) if detail_parts else "—",
         )
     console.print(table)
 
 
-async def scenario_mixed_workload(console: Any, cache: TieredCache, event_log: List[Dict[str, Any]]) -> None:
-    """Scenario 7: realistic mixed logistics workload."""
+def dashboard_panel(ui: Dict[str, Any], cache: TieredCache, l2: FakeRedisL2, event_log: List[Dict[str, Any]]) -> Any:
+    """Build the final system dashboard."""
 
-    console.print(
-        Panel.fit(
-            "SCENARIO 7: Realistic Mixed Workload",
-            title="Scenario",
-            border_style="cyan",
-        ),
-    )
+    table_cls = ui["Table"]
+    panel_cls = ui["Panel"]
+    box_mod = ui["box"]
 
-    origin = "110001"
-    destination = "560034"
-    merchant_id = "merchant-shipsy-42"
-    awb = SAMPLE_AWBS[3]
-    weight_kg = 1.8
-
-    async def run_flow() -> Tuple[Any, List[Tuple[str, str, str, str, float, Any]]]:
-        rows: List[Tuple[str, str, str, str, float, Any]] = []
-
-        event_index = len(event_log)
-        start = time.perf_counter()
-        serviceability = await cache.getOrSet(
-            f"serviceability:{destination}",
-            lambda: fetch_serviceability(destination),
-            ttl="30m",
-        )
-        latency = time.perf_counter() - start
-        rows.append(
-            (
-                "1",
-                "Serviceability",
-                f"serviceability:{destination}",
-                str(serviceability["serviceable"]),
-                latency,
-                status_from_events(event_log[event_index:]),
-            ),
-        )
-
-        carriers = serviceability["available_carriers"] or list(CARRIERS.keys())[:3]
-        event_index = len(event_log)
-        start = time.perf_counter()
-        rate_results = await asyncio.gather(
-            *(
-                cache.getOrSet(
-                    f"rate:{carrier}:{origin}:{destination}:{weight_kg}",
-                    lambda carrier_name=carrier: fetch_carrier_rate(
-                        carrier_name,
-                        origin,
-                        destination,
-                        weight_kg,
-                    ),
-                    ttl="15m",
-                )
-                for carrier in carriers
-            ),
-        )
-        latency = time.perf_counter() - start
-        cheapest = min(rate_results, key=lambda result: result["total"])
-        rows.append(
-            (
-                "2",
-                "Rate Shopping",
-                f"rate:*:{origin}:{destination}:{weight_kg}",
-                f"{len(rate_results)} rates, cheapest {cheapest['carrier']} {format_currency(cheapest['total'])}",
-                latency,
-                status_from_events(event_log[event_index:]),
-            ),
-        )
-
-        rows.append(
-            (
-                "3",
-                "Select Cheapest",
-                "in-memory-selection",
-                cheapest["carrier"],
-                0.0,
-                Text("-", style="dim"),
-            ),
-        )
-
-        event_index = len(event_log)
-        start = time.perf_counter()
-        merchant_config = await cache.getOrSet(
-            f"merchant-config:{merchant_id}",
-            lambda: fetch_merchant_config(merchant_id),
-            ttl="10m",
-        )
-        latency = time.perf_counter() - start
-        rows.append(
-            (
-                "4",
-                "Merchant Config",
-                f"merchant-config:{merchant_id}",
-                f"SLA {merchant_config['delivery_sla_hours']}h",
-                latency,
-                status_from_events(event_log[event_index:]),
-            ),
-        )
-
-        event_index = len(event_log)
-        start = time.perf_counter()
-        tracking = await cache.getOrSet(
-            f"tracking:{awb}",
-            lambda: fetch_tracking(awb),
-            ttl="30s",
-        )
-        latency = time.perf_counter() - start
-        rows.append(
-            (
-                "5",
-                "Return Tracking",
-                f"tracking:{awb}",
-                tracking["status"],
-                latency,
-                status_from_events(event_log[event_index:]),
-            ),
-        )
-
-        return cheapest, rows
-
-    _, first_rows = await run_flow()
-    first_table = Table(title="Order Creation Flow — Cold", expand=True)
-    for column in ("Step", "Operation", "Key", "Result", "Latency", "Cache Status"):
-        first_table.add_column(column)
-    for row in first_rows:
-        first_table.add_row(
-            row[0],
-            row[1],
-            row[2],
-            row[3],
-            format_ms(row[4]),
-            row[5],
-        )
-    console.print(first_table)
-
-    console.print("[bold green]Second order for same route — everything cached:[/bold green]")
-    _, second_rows = await run_flow()
-    second_table = Table(title="Order Creation Flow — Warm", expand=True)
-    for column in ("Step", "Operation", "Key", "Result", "Latency", "Cache Status"):
-        second_table.add_column(column)
-    for row in second_rows:
-        second_table.add_row(
-            row[0],
-            row[1],
-            row[2],
-            row[3],
-            format_ms(row[4]),
-            row[5],
-        )
-    console.print(second_table)
-
-
-def final_statistics_panel(cache: TieredCache, l2: FakeRedisL2, event_log: List[Dict[str, Any]]) -> Any:
-    """Build the final system statistics panel."""
-
+    l1_stats = cache.stats()["l1"]
+    l2_stats = l2.diagnostics()
     counts = Counter(event["event"] for event in event_log)
-    summary = Table.grid(expand=True)
-    summary.add_row(f"L1 cache stats: {cache.stats()}")
-    summary.add_row(f"L2 diagnostics: {l2.diagnostics()}")
-    summary.add_row(f"Total events by type: {dict(counts)}")
-    summary.add_row("✅ All 7 scenarios completed successfully")
-    summary.add_row(f"📊 Total cache operations: {l2.diagnostics()['total_operations']}")
+
+    left = table_cls(box=box_mod.SIMPLE_HEAVY, expand=True)
+    left.add_column("L1 Stats", style=KEY_STYLE)
+    left.add_column("Value")
+    left.add_row("Size", f"{l1_stats['size']} / {l1_stats['max_size']}")
+    left.add_row("Namespace", cache.stats()["namespace"])
+
+    right = table_cls(box=box_mod.SIMPLE_HEAVY, expand=True)
+    right.add_column("L2 Diagnostics", style=KEY_STYLE)
+    right.add_column("Value")
+    right.add_row("Backend", "FakeRedisL2")
+    right.add_row("Live keys", str(l2_stats["live_keys"]))
+    right.add_row("Total operations", str(l2_stats["total_operations"]))
+    right.add_row("Simulated failures", str(l2_stats["simulated_failures"]))
+
+    summary = table_cls.grid(expand=True)
+    summary.add_row(left, right)
+    summary.add_row("")
+    summary.add_row("✅ All scenarios completed")
     summary.add_row("🛡️ Stampede protection: verified")
-    summary.add_row("♻️ Stale serving: verified")
-    summary.add_row("📡 Event system: verified")
-    return Panel(summary, title="System Statistics", border_style="green")
+    summary.add_row("♻️  Graceful degradation: verified")
+    summary.add_row("📡 Event observability: verified")
+    summary.add_row(f"Event counts: {dict(counts)}")
+    return panel_cls(summary, title="📊 System Dashboard", border_style="green")
 
 
 async def main() -> None:
-    """Run the full visual logistics demo."""
+    """Run the visual demo."""
 
-    if not RICH_AVAILABLE:
+    try:
+        from rich import box
+        from rich.console import Console
+        from rich.live import Live
+        from rich.panel import Panel
+        from rich.rule import Rule
+        from rich.table import Table
+        from rich.text import Text
+    except ImportError:
         print("This demo requires the 'rich' library for visual output.")
         print("Install it with: pip install rich")
-        print("Or run the basic simulation: python examples/simulation/main.py")
+        print("\nOr run the basic example: python examples/basic_usage.py")
         return
 
     console = Console()
-    random.seed()
+    ui = {
+        "Table": Table,
+        "Panel": Panel,
+        "Live": Live,
+        "Text": Text,
+        "Rule": Rule,
+        "box": box,
+    }
 
     l2 = FakeRedisL2(namespace="shipsy_demo", latency_ms=5)
     cache = TieredCache(
@@ -758,22 +654,21 @@ async def main() -> None:
     event_log: List[Dict[str, Any]] = []
     attach_event_listeners(cache, event_log)
 
-    scenarios = [
-        scenario_rate_shopping(console, cache, event_log),
-        scenario_stampede(console, cache),
-        scenario_ttl_expiry(console, cache),
-        scenario_graceful_degradation(console, cache),
-        scenario_l2_hydration(console, cache, l2),
-        scenario_event_observability(console, cache, event_log),
-        scenario_mixed_workload(console, cache, event_log),
+    scenarios: List[Callable[[], Any]] = [
+        lambda: scenario_rate_shopping(console, ui, cache, event_log),
+        lambda: scenario_stampede(console, ui, cache),
+        lambda: scenario_ttl_lifecycle(console, ui, cache),
+        lambda: scenario_graceful_degradation(console, ui, cache, l2),
+        lambda: scenario_l2_hydration(console, ui, cache, l2, event_log),
+        lambda: scenario_event_stream(console, ui, cache, event_log),
     ]
 
     for index, scenario in enumerate(scenarios, start=1):
-        await scenario
+        await scenario()
         if index != len(scenarios):
-            console.print(Rule())
+            console.print(ui["Rule"]())
 
-    console.print(final_statistics_panel(cache, l2, event_log))
+    console.print(dashboard_panel(ui, cache, l2, event_log))
 
 
 if __name__ == "__main__":

@@ -1,40 +1,38 @@
 # Shipsy Multi-Tier Caching Library
 
-> A production-quality two-tier caching library built for Shipsy Engineering's take-home assignment.
+A production-quality, two-tier caching library built for high-throughput logistics backends. Designed as a take-home assignment for Shipsy Engineering.
 
 ## Quick Start
 
+1. Install the demo extra.
+2. Run the visual demo.
+3. Watch the cache behavior play out live in the terminal.
+
 ```bash
-pip install -e .
-python3 examples/basic_usage.py
+pip install -e ".[demo]"
+python examples/visual_demo.py
 ```
+
+When you run the visual demo, you get a rich terminal dashboard demonstrating cache hits, stampede protection, TTL expiry, graceful degradation, and L2 hydration using logistics-realistic data. It uses `FakeRedisL2`, so there is no Redis container, Docker setup, or external dependency required to evaluate the library.
 
 ## Installation
 
 ```bash
+# Core library (zero dependencies)
 pip install -e .
+
+# With visual demo support
+pip install -e ".[demo]"
+
+# With development tools (testing, linting)
 pip install -e ".[dev]"
 ```
 
 ## Usage
 
-## Simulation Demo
+### Basic Cache-Aside
 
-Run:
-
-```bash
-python examples/simulation/main.py
-```
-
-The simulation uses the real `TieredCache` implementation to demonstrate:
-
-- cache hits and misses
-- TTL expiry
-- stampede protection under concurrency
-- graceful degradation with stale serving
-- event observability through real cache event listeners
-
-### Basic Usage (code example)
+The simplest way to use the library is the cache-aside pattern shown in [`examples/basic_usage.py`](/Users/harshkhandelwal/Documents/New project/shipsy-cache/examples/basic_usage.py):
 
 ```python
 import asyncio
@@ -43,23 +41,20 @@ from shipsy_cache import TieredCache
 
 
 async def main() -> None:
-    cache = TieredCache(default_ttl="5m", grace_period="30s")
+    cache = TieredCache(default_ttl=1, grace_period=2, namespace="basic-demo")
 
-    async def fetch_order() -> dict[str, str]:
+    async def slow_database_lookup() -> dict[str, str]:
         await asyncio.sleep(0.2)
-        return {"order_id": "ORD-42", "status": "dispatched"}
+        return {"order_id": "ORD-1001", "status": "in_transit"}
 
-    first = await cache.getOrSet("order:42", fetch_order, ttl="30s")
-    second = await cache.getOrSet("order:42", fetch_order, ttl="30s")
-
-    print(first)
-    print(second)
+    result = await cache.getOrSet("order:1001", slow_database_lookup, ttl="30s")
+    print(result)
 
 
 asyncio.run(main())
 ```
 
-### With Redis L2 (code example)
+### With Redis (Production)
 
 ```python
 import asyncio
@@ -68,22 +63,62 @@ from shipsy_cache import RedisL2, TieredCache
 
 
 async def main() -> None:
-    redis_backend = RedisL2(namespace="shipsy_cache")
+    l2 = RedisL2(host="localhost", port=6379, namespace="rates")
     cache = TieredCache(
-        l2_backend=redis_backend,
+        l2_backend=l2,
         namespace="rates",
         default_ttl="10m",
         grace_period="1m",
     )
 
-    await cache.set("carrier:123", {"amount": 87.5, "currency": "INR"}, ttl="2m")
-    print(await cache.get("carrier:123"))
+    rate = await cache.getOrSet(
+        "delhivery:DEL:BLR",
+        lambda: carrier_api.get_rate("delhivery", "DEL", "BLR"),
+        ttl="15m",
+    )
+    print(rate)
 
 
 asyncio.run(main())
 ```
 
-### TTL Formats (table showing all supported formats)
+### With FakeRedisL2 (Development & Testing)
+
+`FakeRedisL2` is designed for development, demos, and integration-style tests. Unlike `MemoryStubL2`, it JSON-serializes values on write and deserializes them on read, which means it catches serialization bugs that would otherwise stay hidden until a real Redis deployment.
+
+```python
+from shipsy_cache import TieredCache, FakeRedisL2
+
+l2 = FakeRedisL2(namespace="myservice", latency_ms=5)
+cache = TieredCache(l2_backend=l2, default_ttl="10m", grace_period="1m")
+```
+
+### Logistics Patterns
+
+```python
+# Rate shopping
+rate = await cache.getOrSet(
+    f"rate:{carrier}:{origin}:{dest}",
+    lambda: carrier_api.get_rate(carrier, origin, dest),
+    ttl="15m",
+)
+
+# Tracking (high read, short TTL)
+status = await cache.getOrSet(
+    f"tracking:{awb}",
+    lambda: tracking_api.fetch(awb),
+    ttl="30s",
+)
+
+# Serviceability (high read, long TTL)
+result = await cache.getOrSet(
+    f"serviceability:{pincode}",
+    lambda: serviceability_db.check(pincode),
+    ttl="6h",
+)
+```
+
+### TTL Formats
 
 | Input | Meaning | Output Seconds |
 | --- | --- | ---: |
@@ -93,15 +128,17 @@ asyncio.run(main())
 | `2h` | 2 hours | `7200.0` |
 | `1d` | 1 day | `86400.0` |
 
-### Event Listening (code example)
+### Event Listening
 
 ```python
 from shipsy_cache import TieredCache
 
 cache = TieredCache()
 
+
 def listener(payload: dict) -> None:
     print(payload)
+
 
 cache.on("cache:hit", listener)
 cache.on("cache:miss", listener)
@@ -110,20 +147,37 @@ cache.on("cache:stale-served", listener)
 cache.on("cache:invalidate", listener)
 ```
 
+## Visual Demo
+
+```bash
+pip install rich
+python examples/visual_demo.py
+```
+
+The demo covers:
+
+- Rate shopping: cold vs warm fetch with latency comparison
+- Stampede protection: 50 concurrent requests, factory called once
+- TTL lifecycle: live countdown showing fresh → expired transition
+- Graceful degradation: stale serving during simulated carrier outage
+- L2 → L1 hydration: simulating multi-instance deployment
+- Event observability: full event stream display
+
+The demo uses `FakeRedisL2` — no Docker, no Redis, no external services.
+
 ## Running Tests
 
 ### Unit Tests (no dependencies needed)
 
 ```bash
-python3 -m pytest tests/ --ignore=tests/integration -v --cov=shipsy_cache --cov-report=term-missing
+pytest tests/ --ignore=tests/integration -v --cov=shipsy_cache --cov-report=term-missing
 ```
 
-### Integration Tests (with Redis)
+### Integration Tests (requires Redis)
 
 ```bash
-export REDIS_HOST=localhost
-export REDIS_PORT=6379
-python3 -m pytest tests/integration/ -v
+export REDIS_HOST=localhost REDIS_PORT=6379
+pytest tests/integration/ -v
 ```
 
 ### Using Docker Compose
@@ -175,6 +229,18 @@ Registers a listener on the internal event emitter.
 
 Returns `{"l1": {"size": int, "max_size": int}, "namespace": str}`.
 
+### FakeRedisL2(...)
+
+```python
+FakeRedisL2(
+    namespace: str = "shipsy_cache",
+    latency_ms: float = 0.0,
+    failure_rate: float = 0.0,
+)
+```
+
+In-process Redis simulator with JSON serialization, TTL support, configurable latency, and failure injection. Use for development, demos, and integration tests without a running Redis server.
+
 ## Architecture
 
 ### L1 — In-Memory Cache
@@ -183,9 +249,9 @@ L1 is a bounded `OrderedDict`-backed LRU with lazy TTL eviction and `threading.L
 
 ### L2 — Pluggable Backend
 
-L2 is an async interface. The package ships with a default `MemoryStubL2` for zero-dependency usage and `RedisL2` for shared cache deployments.
+L2 is an async interface. The library ships with three implementations: `MemoryStubL2` for unit tests, `FakeRedisL2` for integration tests and demos (with JSON serialization and configurable latency), and `RedisL2` for production deployments.
 
-### Cache-Aside Flow (ASCII diagram)
+### Cache-Aside Flow
 
 ```text
 Caller
@@ -208,30 +274,15 @@ TieredCache.getOrSet(key)
                   +--> failure --> serve stale within grace window or raise FactoryError
 ```
 
-### Stampede Protection (explanation)
+### Stampede Protection
 
 `getOrSet()` keeps a per-key `asyncio.Lock`. The first coroutine becomes the leader, and concurrent callers for the same key wait on that lock instead of calling the factory again.
 
-### Grace Period (explanation)
+### Grace Period
 
 When a cached L1 value has expired, the library can still serve it for a short grace window if the factory fails. This protects callers during transient downstream outages.
 
-## Key Design Decisions
-
-See [DESIGN_DECISIONS.md](./DESIGN_DECISIONS.md).
-
-## What I Would Change With More Time
-
-- Preserve exact remaining TTL when hydrating L1 from L2 instead of resetting to `default_ttl`.
-- Add richer stats such as hit rate, stale serves, and inflight contention counts.
-- Add optional serializer hooks for teams that need MessagePack or custom encoding.
-- Add more Redis-specific operational features such as circuit-breaking and cluster-aware tests.
-
-## How I Used AI
-
-AI helped accelerate scaffolding, draft documentation, and generate an initial pass at the test suite and examples. I still had to review the concurrency semantics, refine the stale-serving behavior, and ensure the README and docs matched the actual implemented API rather than an aspirational one. The remaining area I would revisit manually is deeper production hardening around distributed Redis failure modes.
-
-## Configuration Reference (table of all config options)
+## Configuration Reference
 
 | Option | Where | Default | Description |
 | --- | --- | --- | --- |
@@ -248,3 +299,23 @@ AI helped accelerate scaffolding, draft documentation, and generate an initial p
 | `ssl` | `RedisL2` | `False` | Whether to use TLS for Redis |
 | `namespace` | `RedisL2` | `"shipsy_cache"` | Redis storage prefix applied ahead of logical cache keys |
 | `socket_timeout` | `RedisL2` | `2.0` | Redis socket timeout in seconds |
+| `namespace` | `FakeRedisL2` | `"shipsy_cache"` | Key prefix, mirrors RedisL2 behavior |
+| `latency_ms` | `FakeRedisL2` | `0.0` | Artificial delay per operation in ms |
+| `failure_rate` | `FakeRedisL2` | `0.0` | Probability (0-1) of simulated `ConnectionError` |
+
+## Key Design Decisions
+
+See [DESIGN_DECISIONS.md](./DESIGN_DECISIONS.md).
+
+## What I Would Change With More Time
+
+- Preserve exact remaining TTL when hydrating L1 from L2 instead of resetting to `default_ttl`.
+- Add richer stats such as hit rate, stale serves, and inflight contention counts.
+- Add optional serializer hooks for teams that need MessagePack or custom encoding.
+- Add more Redis-specific operational features such as circuit-breaking and cluster-aware tests.
+- Add circuit-breaker pattern around L2 calls so a failing Redis doesn't add latency to every request.
+- Support batch `getOrSet` for fetching multiple keys in a single call (common in rate-shopping where you need 6 carrier rates at once).
+
+## How I Used AI
+
+AI helped accelerate scaffolding, draft documentation, and generate an initial pass at the test suite and examples. I still had to review the concurrency semantics, refine the stale-serving behavior, and ensure the README and docs matched the actual implemented API rather than an aspirational one. The remaining area I would revisit manually is deeper production hardening around distributed Redis failure modes.
