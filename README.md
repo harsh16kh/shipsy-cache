@@ -4,21 +4,21 @@ A production-quality, two-tier caching library built for high-throughput logisti
 
 ## Quick Start
 
-1. Install the demo extra.
-2. Run the visual demo.
-3. Watch the cache behavior play out live in the terminal.
+1. Install the library.
+2. Run the basic usage example.
+3. Import `TieredCache` into your service and start caching reads.
 
 ```bash
-pip install -e ".[demo]"
-python examples/visual_demo.py
+pip install -e .
+python examples/basic_usage.py
 ```
 
-When you run the visual demo, you get a rich terminal dashboard demonstrating cache hits, stampede protection, TTL expiry, graceful degradation, and L2 hydration using logistics-realistic data. It uses `FakeRedisL2`, so there is no Redis container, Docker setup, or external dependency required to evaluate the library.
+This path keeps the first experience focused on the library itself: `TieredCache`, TTLs, invalidation, and cache lifecycle events. The visual demo still exists, but it is optional and moved to the end of this README.
 
 ## Installation
 
 ```bash
-# Core library (zero dependencies)
+# Core library
 pip install -e .
 
 # With visual demo support
@@ -101,52 +101,6 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-### With FakeRedisL2 (Local Development and Submission Demo)
-
-`FakeRedisL2` is the recommended local backend for this submission. It gives you a Redis-like experience without running Redis, while still preserving the JSON serialization boundary that matters in real deployments.
-
-```python
-from shipsy_cache import FakeRedisL2, TieredCache
-
-l2 = FakeRedisL2(
-    namespace="myservice_backend",
-    latency_ms=5.0,
-    failure_rate=0.0,
-)
-cache = TieredCache(
-    l2_backend=l2,
-    l1_max_size=500,
-    default_ttl="10m",
-    grace_period="1m",
-    namespace="myservice",
-    event_emitter=None,
-)
-```
-
-### Recommended Backend Choices
-
-For the submission and local development story, there are really two backends to think about:
-
-- `FakeRedisL2`: use this locally, in demos, and in high-fidelity tests.
-- `RedisL2`: use this for a real shared backend in production.
-
-`TieredCache` can also fall back to an internal in-process backend when `l2_backend=None`, but that is an implementation detail rather than the primary story of the library.
-
-```python
-from shipsy_cache import FakeRedisL2, RedisL2
-
-redis_like_local_backend = FakeRedisL2(namespace="demo", latency_ms=5.0, failure_rate=0.0)
-production_shared_backend = RedisL2(
-    host="localhost",
-    port=6379,
-    db=0,
-    password=None,
-    ssl=False,
-    namespace="shipsy_cache",
-    socket_timeout=2.0,
-)
-```
-
 ### Logistics Patterns
 
 ```python
@@ -207,24 +161,6 @@ cache.on("cache:set", listener)
 cache.on("cache:stale-served", listener)
 cache.on("cache:invalidate", listener)
 ```
-
-## Visual Demo
-
-```bash
-pip install rich
-python examples/visual_demo.py
-```
-
-The demo covers:
-
-- Rate shopping: cold vs warm fetch with latency comparison
-- Stampede protection: 50 concurrent requests, factory called once
-- TTL lifecycle: live countdown showing fresh → expired transition
-- Graceful degradation: stale serving during simulated carrier outage
-- L2 → L1 hydration: simulating multi-instance deployment
-- Event observability: full event stream display
-
-The demo uses `FakeRedisL2` as the single local/demo backend — no Docker, no Redis, no external services.
 
 ## Running Tests
 
@@ -290,18 +226,6 @@ Registers a listener on the internal event emitter.
 
 Returns `{"l1": {"size": int, "max_size": int}, "namespace": str}`.
 
-### FakeRedisL2(...)
-
-```python
-FakeRedisL2(
-    namespace: str = "shipsy_cache",
-    latency_ms: float = 0.0,
-    failure_rate: float = 0.0,
-)
-```
-
-In-process Redis simulator with JSON serialization, TTL support, configurable latency, and failure injection. Use this as the primary local/demo backend when you want Redis-like behavior without a running Redis server.
-
 ## Architecture
 
 ### L1 — In-Memory Cache
@@ -310,12 +234,7 @@ L1 is a bounded `OrderedDict`-backed LRU with lazy TTL eviction and `threading.L
 
 ### L2 — Pluggable Backend
 
-L2 is an async interface. For the purpose of understanding this library quickly, the important two backends are:
-
-- `FakeRedisL2` for local development, demos, and high-fidelity testing
-- `RedisL2` for production deployments
-
-The package also contains an internal in-process fallback used when no explicit L2 backend is supplied, but that fallback is not the main submission story.
+L2 is an async interface. In normal library usage, the key thing to understand is that you can provide a shared backend such as `RedisL2`, or rely on the built-in default fallback when no explicit `l2_backend` is supplied.
 
 ### Cache-Aside Flow
 
@@ -365,9 +284,6 @@ When a cached L1 value has expired, the library can still serve it for a short g
 | `ssl` | `RedisL2` | `False` | Whether to use TLS for Redis |
 | `namespace` | `RedisL2` | `"shipsy_cache"` | Redis storage prefix applied ahead of logical cache keys |
 | `socket_timeout` | `RedisL2` | `2.0` | Redis socket timeout in seconds |
-| `namespace` | `FakeRedisL2` | `"shipsy_cache"` | Key prefix, mirrors RedisL2 behavior |
-| `latency_ms` | `FakeRedisL2` | `0.0` | Artificial delay per operation in ms |
-| `failure_rate` | `FakeRedisL2` | `0.0` | Probability (0-1) of simulated `ConnectionError` |
 
 ## Key Design Decisions
 
@@ -385,3 +301,23 @@ See [DESIGN_DECISIONS.md](./DESIGN_DECISIONS.md).
 ## How I Used AI
 
 AI helped accelerate scaffolding, draft documentation, and generate an initial pass at the test suite and examples. I still had to review the concurrency semantics, refine the stale-serving behavior, and ensure the README and docs matched the actual implemented API rather than an aspirational one. The remaining area I would revisit manually is deeper production hardening around distributed Redis failure modes.
+
+## Visual Demo
+
+```bash
+pip install -e ".[demo]"
+python examples/visual_demo.py
+```
+
+The visual demo is optional. It lives at the end of the README because it is not required to understand or use the library itself.
+
+The demo covers:
+
+- Rate shopping: cold vs warm fetch with latency comparison
+- Stampede protection: 50 concurrent requests, factory called once
+- TTL lifecycle: live countdown showing fresh → expired transition
+- Graceful degradation: stale serving during simulated carrier outage
+- L2 → L1 hydration: simulating multi-instance deployment
+- Event observability: full event stream display
+
+Internally, the demo uses `FakeRedisL2` so it can run without Docker, Redis, or external services.
