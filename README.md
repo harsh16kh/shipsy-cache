@@ -1,8 +1,6 @@
 # Shipsy Multi-Tier Caching Library
 
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
-![Tests](https://img.shields.io/badge/tests-35%20passing-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-97%25-brightgreen)
 
 A production-quality, two-tier caching library for high-throughput logistics backends. It is designed for the kinds of read-heavy flows that matter in fulfillment systems: rate shopping, tracking lookups, serviceability checks, and other hot-key workloads where latency and downstream stability directly affect conversion and operations.
 
