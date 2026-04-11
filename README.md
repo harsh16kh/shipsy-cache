@@ -47,8 +47,8 @@ async def main() -> None:
             "currency": "INR",
         }
 
-    first = await cache.getOrSet("rate:delhivery:DEL:BLR", fetch_rate, ttl="15m")
-    second = await cache.getOrSet("rate:delhivery:DEL:BLR", fetch_rate, ttl="15m")
+    first = await cache.getOrSet("rate:delhivery:DEL:BLR", fetch_rate, ttl="15m") # miss -> populate
+    second = await cache.getOrSet("rate:delhivery:DEL:BLR", fetch_rate, ttl="15m") # hit -> reuse
     print(first)
     print(second)
 
