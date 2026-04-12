@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 
-A production-minded two-tier caching library designed for high-throughput backend workloads such as logistics rate shopping, tracking lookups, and serviceability checks. It combines a fast in-process L1 with a shared Redis-backed L2, explicit async orchestration, and failure behavior that is small enough to reason about in a code walkthrough.
+A two-tier caching library for backend systems that repeatedly fetch or compute the same data under high concurrency (e.g. tracking lookups, rate queries, serviceability checks). It combines a bounded in-process L1 with a shared Redis-backed L2, along with async `getOrSet` semantics and per-key concurrency control to prevent duplicate work. The design focuses on TTL correctness, predictable behavior, and graceful handling of cache and dependency failures.
 
 ## Quick Start
 
@@ -80,6 +80,17 @@ serviceability = await cache.getOrSet(
     ttl="6h",
 )
 ```
+
+## Workload Mapping (Logistics Use Cases)
+
+Typical TTL choices depend on how volatile the underlying data is:
+
+| Workload | Suggested TTL | Why |
+| --- | --- | --- |
+| Shipment tracking | `15s` to `60s` | Frequently read and changes often during active fulfillment. |
+| Spot rates / carrier quotes | `5m` to `15m` | Expensive to fetch, but still time-sensitive. |
+| Serviceability checks | `1h` to `6h` | Read-heavy and comparatively stable. |
+| Dashboard aggregates | bounded freshness via scheduled recompute | Usually acceptable to serve slightly old summaries if refresh is controlled elsewhere. |
 
 ## Core Concepts
 
@@ -226,17 +237,6 @@ This table is the single source of truth for runtime configuration.
 | `REDIS_DB` | `RedisL2` | `0` | Redis database index |
 | `REDIS_PASSWORD` | `RedisL2` | unset | Redis password |
 
-## Workload-Oriented TTL Guidance
-
-Typical TTL choices depend on how volatile the underlying data is:
-
-| Workload | Suggested TTL | Why |
-| --- | --- | --- |
-| Shipment tracking | `15s` to `60s` | Frequently read and changes often during active fulfillment. |
-| Spot rates / carrier quotes | `5m` to `15m` | Expensive to fetch, but still time-sensitive. |
-| Serviceability checks | `1h` to `6h` | Read-heavy and comparatively stable. |
-| Dashboard aggregates | bounded freshness via scheduled recompute | Usually acceptable to serve slightly old summaries if refresh is controlled elsewhere. |
-
 ## Production Guide
 
 ### Testing
@@ -308,9 +308,9 @@ GitHub Actions runs [tests.yml](./.github/workflows/tests.yml):
 ### What I would add with more time
 
 - Circuit-breaker behavior around repeated L2 failures so Redis outages do not add latency to every request.
+- Request coalescing immediately after L1 miss so only one caller per key performs the L2 lookup under burst traffic. Today the library deduplicates factory execution, but multiple concurrent callers can still miss L1 and hit Redis at the same time before one of them becomes the factory leader. Moving coalescing earlier would reduce redundant L2 reads, lower hot-key Redis load, and improve tail latency.
 - Batch `getOrSet` support for rate-shopping fan-out patterns where several carrier rates are fetched together.
 - Richer stats such as hit rate, stale serves, and inflight contention counts.
-- Serializer hooks for teams that want MessagePack or custom encoding.
 - Redis cluster-aware testing and more production hardening around failover scenarios.
 
 ## How I Used AI
