@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import pytest
 
 from shipsy_cache import CacheEventEmitter, FactoryError, L2UnavailableError, TieredCache
 from shipsy_cache.l1.memory_store import MemoryStore
+from shipsy_cache.l2.base import L2CacheEntry
 from shipsy_cache.l2.redis_store import RedisError, RedisL2
 from tests.support import InMemoryTestL2
 
@@ -29,6 +31,11 @@ class MockRedisClient:
         """Return the stored raw value."""
 
         return self.storage.get(key)
+
+    async def pttl(self, key: str) -> int:
+        """Return a positive TTL to simulate a live Redis key."""
+
+        return 500 if key in self.storage else -2
 
     async def set(self, key: str, value: str, px: int) -> bool:
         """Record the write and store the raw payload."""
@@ -130,7 +137,10 @@ def test_memory_store_enforces_max_size_and_supports_stale_reads() -> None:
     time.sleep(0.02)
     assert short_store.get("stale") is None
     assert short_store.get_stale("stale") == "value"
-    assert short_store._get_entry("stale") is not None
+    metadata = short_store.get_entry_metadata("stale")
+    assert metadata is not None
+    assert metadata.value == "value"
+    assert metadata.is_stale is True
     short_store.delete("stale")
     assert short_store.get_stale("stale") is None
     short_store.clear()
@@ -144,6 +154,13 @@ def test_memory_store_rejects_invalid_max_size() -> None:
         MemoryStore(max_size=0)
 
 
+def test_tiered_cache_requires_explicit_l2_backend() -> None:
+    """TieredCache should require callers to choose an L2 backend explicitly."""
+
+    with pytest.raises(TypeError):
+        TieredCache()
+
+
 @pytest.mark.asyncio
 async def test_redis_l2_methods_and_error_wrapping() -> None:
     """RedisL2 should namespace keys, serialize payloads, and wrap backend errors."""
@@ -155,6 +172,10 @@ async def test_redis_l2_methods_and_error_wrapping() -> None:
     await backend.set("key", {"value": 7}, ttl_seconds=0.5)
     assert client.last_set_call == ("unit:key", json.dumps({"value": 7}), 500)
 
+    entry = await backend.get_entry("key")
+    assert entry is not None
+    assert entry.value == {"value": 7}
+    assert entry.remaining_ttl_seconds == pytest.approx(0.5, rel=0.02)
     assert await backend.get("key") == {"value": 7}
     assert backend._prefix("x") == "unit:x"
     assert await backend.ping() is True
@@ -182,6 +203,17 @@ async def test_redis_l2_methods_and_error_wrapping() -> None:
 
 
 @pytest.mark.asyncio
+async def test_redis_l2_rejects_non_json_serializable_values() -> None:
+    """RedisL2 should surface JSON serialization failures directly."""
+
+    backend = RedisL2(namespace="unit")
+    backend._client = MockRedisClient()
+
+    with pytest.raises(TypeError):
+        await backend.set("bad", {"created_at": datetime.utcnow()}, ttl_seconds=1)
+
+
+@pytest.mark.asyncio
 async def test_cache_internal_branches_are_exercised() -> None:
     """Exercise smaller internal branches that are hard to reach via public API alone."""
 
@@ -191,7 +223,7 @@ async def test_cache_internal_branches_are_exercised() -> None:
     cache._cleanup_inflight("missing")
 
     class WriteFailL2:
-        async def get(self, key: str) -> Optional[Any]:
+        async def get_entry(self, key: str) -> Optional[L2CacheEntry]:
             return None
 
         async def set(self, key: str, value: Any, ttl_seconds: float) -> None:
@@ -254,7 +286,7 @@ async def test_cache_internal_branches_are_exercised() -> None:
         def __init__(self) -> None:
             self.waiter = asyncio.Event()
 
-        async def get(self, key: str) -> Optional[Any]:
+        async def get_entry(self, key: str) -> Optional[L2CacheEntry]:
             await self.waiter.wait()
             return None
 

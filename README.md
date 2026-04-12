@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 
-A high-performance, production-ready two-tier caching library designed for high-throughput environments (e.g., logistics backends). It implements a local-first (L1) and shared-second (L2) strategy to minimize latency and protect downstream systems from cache stampedes.
+A production-minded two-tier caching library designed for high-throughput backend workloads such as logistics rate shopping, tracking lookups, and serviceability checks. It combines a fast in-process L1 with a shared Redis-backed L2, explicit async orchestration, and failure behavior that is small enough to reason about in a code walkthrough.
 
 ## Quick Start
 
@@ -140,13 +140,19 @@ With `TieredCache.getOrSet()`:
 - **TTL** controls freshness.
 - **Grace period** is a fallback window after expiry.
 
+### Concurrency Guarantee
+
+- For a single process and a single key, only one coroutine executes the factory at a time.
+- Waiting callers reuse the leader's result, failure, or stale fallback outcome.
+- This protection is intentionally process-local rather than distributed across instances.
+
 ## API Reference
 
 ### Constructor
 
 ```python
 TieredCache(
-    l2_backend: Optional[L2Backend] = None,
+    l2_backend: L2Backend,
     l1_max_size: int = 1000,
     default_ttl: Union[int, float, str] = 300,
     grace_period: Union[int, float, str] = 60,
@@ -187,7 +193,7 @@ This table is the single source of truth for runtime configuration.
 
 | Option | Scope | Default | Description |
 | --- | --- | --- | --- |
-| `l2_backend` | `TieredCache` | `RedisL2()` | Async L2 backend implementation. |
+| `l2_backend` | `TieredCache` | required | Explicit async L2 backend implementation. |
 | `l1_max_size` | `TieredCache` | `1000` | Maximum number of fresh entries in local L1. |
 | `default_ttl` | `TieredCache` | `300` | Default TTL for writes; accepts seconds or strings like `5m`. |
 | `grace_period` | `TieredCache` | `60` | Window for serving stale L1 data after expiry if the factory fails. |
@@ -220,6 +226,17 @@ This table is the single source of truth for runtime configuration.
 | `REDIS_DB` | `RedisL2` | `0` | Redis database index |
 | `REDIS_PASSWORD` | `RedisL2` | unset | Redis password |
 
+## Workload-Oriented TTL Guidance
+
+Typical TTL choices depend on how volatile the underlying data is:
+
+| Workload | Suggested TTL | Why |
+| --- | --- | --- |
+| Shipment tracking | `15s` to `60s` | Frequently read and changes often during active fulfillment. |
+| Spot rates / carrier quotes | `5m` to `15m` | Expensive to fetch, but still time-sensitive. |
+| Serviceability checks | `1h` to `6h` | Read-heavy and comparatively stable. |
+| Dashboard aggregates | bounded freshness via scheduled recompute | Usually acceptable to serve slightly old summaries if refresh is controlled elsewhere. |
+
 ## Production Guide
 
 ### Testing
@@ -247,8 +264,10 @@ pytest tests/integration/ -v
 - L1 is process-local; Redis is the shared layer across instances.
 - Redis credentials come from constructor arguments or environment variables.
 - No HTTP server, telemetry stack, or distributed synchronization layer is included.
+- Reads degrade gracefully when stale data is available within the grace window.
+- `invalidate()` and `clear()` are fail-fast: the shared L2 operation must succeed before local L1 state is discarded.
 
-> Production boundary: this submission is production-ready for the core library use case, but intentionally scoped. It focuses on correctness, concurrency behavior, and operability rather than a broad feature surface.
+> Scope boundary: this is an assignment-scoped library with production concerns in mind. The focus is correctness, concurrency behavior, and explicit tradeoffs rather than a broad platform feature set.
 
 ### Troubleshooting
 
@@ -275,14 +294,16 @@ GitHub Actions runs [tests.yml](./.github/workflows/tests.yml):
 - **Lazy eviction in L1**: keeps the library small and dependency-free without background housekeeping threads.
 - **JSON serialization in L2**: portable, inspectable, and safer than pickle for a shared backend boundary.
 - **Grace-period stale serving**: favors operational continuity during transient downstream failures such as carrier API timeouts.
+- **TTL-preserving L2 hydration**: keeps freshness aligned across tiers so a near-expiry Redis entry does not become artificially fresh in L1.
+- **Explicit L2 selection**: makes the backend dependency obvious to callers instead of silently coupling orchestration to Redis.
 - **Single shipped backend (`RedisL2`)**: keeps the submission focused while preserving a clean L2 interface for future extensions.
 
 ### Tradeoffs accepted
 
 - Stampede protection is process-local, not distributed across instances.
 - Redis cluster-aware behavior is not implemented.
-- L1 hydration from L2 resets to `default_ttl` rather than preserving exact remaining TTL.
 - Event hooks exist, but the project does not include a full telemetry stack by design.
+- Stale entry retention in L1 is intentionally simple and not separately bounded today.
 
 ### What I would add with more time
 

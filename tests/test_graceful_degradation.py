@@ -8,7 +8,7 @@ from typing import Any, Optional
 import pytest
 
 from shipsy_cache import FactoryError, L2UnavailableError, TieredCache
-from shipsy_cache.l2.base import L2Backend
+from shipsy_cache.l2.base import L2Backend, L2CacheEntry
 from tests.support import InMemoryTestL2
 
 
@@ -22,12 +22,15 @@ class FlakyL2(L2Backend):
         self.fail_writes = fail_writes
         self.storage: dict[str, Any] = {}
 
-    async def get(self, key: str) -> Optional[Any]:
+    async def get_entry(self, key: str) -> Optional[L2CacheEntry]:
         """Raise or return a stored value."""
 
         if self.fail_reads:
             raise L2UnavailableError("read failure")
-        return self.storage.get(key)
+        value = self.storage.get(key)
+        if value is None:
+            return None
+        return L2CacheEntry(value=value, remaining_ttl_seconds=None)
 
     async def set(self, key: str, value: Any, ttl_seconds: float) -> None:
         """Raise or store the provided value."""

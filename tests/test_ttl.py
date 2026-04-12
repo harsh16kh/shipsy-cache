@@ -72,3 +72,34 @@ async def test_ttl_applied_to_l1_and_l2() -> None:
 
     assert cache._l1.get(namespaced_key) is None
     assert await cache._l2.get(namespaced_key) is None
+
+
+@pytest.mark.asyncio
+async def test_l2_hydration_preserves_remaining_ttl() -> None:
+    """Hydrating L1 from L2 should preserve the remaining L2 TTL, not reset it."""
+
+    l2 = InMemoryTestL2()
+    cache = TieredCache(l2_backend=l2, default_ttl=60)
+    namespaced_key = cache._namespaced_key("hydrated")
+    await l2.set(namespaced_key, {"value": "from-l2"}, ttl_seconds=0.2)
+
+    await asyncio.sleep(0.1)
+    assert await cache.get("hydrated") == {"value": "from-l2"}
+    assert cache._l1.get(namespaced_key) == {"value": "from-l2"}
+
+    await asyncio.sleep(0.13)
+    assert await cache.get("hydrated") is None
+
+
+@pytest.mark.asyncio
+async def test_expired_l2_entries_are_not_returned_on_hydration() -> None:
+    """Expired L2 entries should not be surfaced or reintroduced into L1."""
+
+    l2 = InMemoryTestL2()
+    cache = TieredCache(l2_backend=l2, default_ttl=60)
+    namespaced_key = cache._namespaced_key("expired-l2-only")
+    await l2.set(namespaced_key, {"value": "gone"}, ttl_seconds=0.05)
+
+    await asyncio.sleep(0.1)
+    assert await cache.get("expired-l2-only") is None
+    assert cache._l1.get(namespaced_key) is None

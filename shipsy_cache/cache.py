@@ -10,7 +10,6 @@ from .events import CacheEventEmitter
 from .exceptions import FactoryError, L2UnavailableError
 from .l1.memory_store import MemoryStore
 from .l2.base import L2Backend
-from .l2.redis_store import RedisL2
 from .ttl import parse_ttl
 
 
@@ -23,7 +22,7 @@ class TieredCache:
 
     def __init__(
         self,
-        l2_backend: Optional[L2Backend] = None,
+        l2_backend: L2Backend,
         l1_max_size: int = 1000,
         default_ttl: Union[int, float, str] = 300,
         grace_period: Union[int, float, str] = 60,
@@ -33,7 +32,7 @@ class TieredCache:
         """Initialize the tiered cache.
 
         Args:
-            l2_backend: Optional L2 backend. Defaults to ``RedisL2``.
+            l2_backend: Explicit L2 backend implementation.
             l1_max_size: Maximum size for the L1 in-memory cache.
             default_ttl: Default TTL for writes when no override is provided.
             grace_period: Additional time window for serving stale values after
@@ -46,7 +45,7 @@ class TieredCache:
         self._default_ttl_seconds = parse_ttl(default_ttl)
         self._grace_period_seconds = parse_ttl(grace_period)
         self._l1 = MemoryStore(max_size=l1_max_size)
-        self._l2 = l2_backend or RedisL2()
+        self._l2 = l2_backend
         self._events = event_emitter or CacheEventEmitter()
         self._inflight: Dict[str, asyncio.Lock] = {}
         self._inflight_results: Dict[str, Tuple[bool, Any]] = {}
@@ -70,15 +69,23 @@ class TieredCache:
             return l1_value
 
         try:
-            l2_value = await self._l2.get(namespaced_key)
+            l2_entry = await self._l2.get_entry(namespaced_key)
         except L2UnavailableError:
             self._emit("cache:miss", key)
             return None
 
-        if l2_value is not None:
-            self._l1.set(namespaced_key, l2_value, self._default_ttl_seconds)
+        if l2_entry is not None:
+            hydration_ttl_seconds = l2_entry.remaining_ttl_seconds
+            if hydration_ttl_seconds is None:
+                hydration_ttl_seconds = self._default_ttl_seconds
+
+            if hydration_ttl_seconds <= 0:
+                self._emit("cache:miss", key)
+                return None
+
+            self._l1.set(namespaced_key, l2_entry.value, hydration_ttl_seconds)
             self._emit("cache:hit", key, tier="L2")
-            return l2_value
+            return l2_entry.value
 
         self._emit("cache:miss", key)
         return None
@@ -100,18 +107,29 @@ class TieredCache:
 
         Args:
             key: Application-level cache key.
+
+        Notes:
+            Invalidation is correctness-sensitive. The cache deletes from L2
+            first and only removes the local L1 entry after the shared backend
+            confirms the delete.
         """
 
         namespaced_key = self._namespaced_key(key)
-        self._l1.delete(namespaced_key)
         await self._l2.delete(namespaced_key)
+        self._l1.delete(namespaced_key)
         self._emit("cache:invalidate", key, tier="L1+L2")
 
     async def clear(self) -> None:
-        """Clear both cache tiers."""
+        """Clear both cache tiers.
 
-        self._l1.clear()
+        Notes:
+            ``clear()`` follows the same fail-fast semantics as invalidation:
+            the shared L2 backend must clear successfully before local L1 state
+            is discarded.
+        """
+
         await self._l2.clear()
+        self._l1.clear()
 
     async def getOrSet(self, key: str, factory_fn: FactoryCallable, ttl: TTLInput = None) -> Any:
         """Fetch from cache or compute once with per-key stampede protection.
@@ -245,14 +263,14 @@ class TieredCache:
     def _get_stale_within_grace(self, namespaced_key: str) -> Optional[Any]:
         """Return stale L1 data only if it is still within the grace period."""
 
-        entry = self._l1._get_entry(namespaced_key)
+        entry = self._l1.get_entry_metadata(namespaced_key)
         if entry is None:
             return None
 
-        if entry["expire_at"] + self._grace_period_seconds < time.time():
+        if entry.expire_at + self._grace_period_seconds < time.time():
             return None
 
-        return entry["value"]
+        return entry.value
 
     def _emit(self, event: str, key: str, tier: Optional[str] = None) -> None:
         """Emit a structured cache lifecycle event."""

@@ -8,7 +8,7 @@ from math import ceil
 from typing import Any, Optional
 
 from ..exceptions import L2UnavailableError
-from .base import L2Backend
+from .base import L2Backend, L2CacheEntry
 
 try:  # pragma: no cover - import availability depends on environment
     import redis.asyncio as redis
@@ -52,14 +52,29 @@ class RedisL2(L2Backend):
             decode_responses=True,
         )
 
-    async def get(self, key: str) -> Optional[Any]:
-        """Return the deserialized value for ``key`` or ``None`` when absent."""
+    async def get_entry(self, key: str) -> Optional[L2CacheEntry]:
+        """Return the deserialized value and remaining TTL for ``key``."""
 
         try:
-            raw_value = await self._client.get(self._prefix(key))
+            prefixed_key = self._prefix(key)
+            raw_value = await self._client.get(prefixed_key)
             if raw_value is None:
                 return None
-            return json.loads(raw_value)
+
+            ttl_ms = await self._client.pttl(prefixed_key)
+            if ttl_ms == -2:
+                return None
+
+            remaining_ttl_seconds = None
+            if ttl_ms >= 0:
+                remaining_ttl_seconds = ttl_ms / 1000.0
+                if remaining_ttl_seconds <= 0:
+                    return None
+
+            return L2CacheEntry(
+                value=json.loads(raw_value),
+                remaining_ttl_seconds=remaining_ttl_seconds,
+            )
         except RedisError as exc:
             raise L2UnavailableError("Redis backend is unavailable during get().") from exc
 

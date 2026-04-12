@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import threading
 import time
 from collections import OrderedDict
 from typing import Any, Dict, Optional
+
+
+@dataclass(frozen=True)
+class MemoryStoreEntry:
+    """Entry metadata exposed for cache coordination logic."""
+
+    value: Any
+    expire_at: float
+    created_at: float
+    is_stale: bool
 
 
 class MemoryStore:
@@ -123,14 +134,24 @@ class MemoryStore:
                 "max_size": self.max_size,
             }
 
-    def _get_entry(self, key: str) -> Optional[Dict[str, Any]]:
-        """Return raw entry metadata for internal cache coordination."""
+    def get_entry_metadata(self, key: str) -> Optional[MemoryStoreEntry]:
+        """Return fresh or stale entry metadata for cache coordination."""
 
         with self._lock:
             entry = self._store.get(key)
             if entry is not None:
-                return dict(entry)
+                return MemoryStoreEntry(
+                    value=entry["value"],
+                    expire_at=entry["expire_at"],
+                    created_at=entry["created_at"],
+                    is_stale=False,
+                )
             stale_entry = self._stale.get(key)
             if stale_entry is not None:
-                return dict(stale_entry)
+                return MemoryStoreEntry(
+                    value=stale_entry["value"],
+                    expire_at=stale_entry["expire_at"],
+                    created_at=stale_entry["created_at"],
+                    is_stale=True,
+                )
             return None

@@ -12,7 +12,7 @@ import json
 import time
 from typing import Any, Dict, Optional
 
-from shipsy_cache.l2.base import L2Backend
+from shipsy_cache.l2.base import L2Backend, L2CacheEntry
 
 
 class InMemoryTestL2(L2Backend):
@@ -24,19 +24,27 @@ class InMemoryTestL2(L2Backend):
         self._lock = asyncio.Lock()
         self._store: Dict[str, Dict[str, Any]] = {}
 
-    async def get(self, key: str) -> Optional[Any]:
-        """Return a fresh value for ``key`` or ``None`` when missing/expired."""
+    async def get_entry(self, key: str) -> Optional[L2CacheEntry]:
+        """Return a fresh value and remaining TTL when available."""
 
         async with self._lock:
             entry = self._store.get(key)
             if entry is None:
                 return None
 
-            if entry["expire_at"] is not None and entry["expire_at"] <= time.time():
+            now = time.time()
+            if entry["expire_at"] is not None and entry["expire_at"] <= now:
                 self._store.pop(key, None)
                 return None
 
-            return json.loads(entry["payload"])
+            remaining_ttl_seconds = None
+            if entry["expire_at"] is not None:
+                remaining_ttl_seconds = entry["expire_at"] - now
+
+            return L2CacheEntry(
+                value=json.loads(entry["payload"]),
+                remaining_ttl_seconds=remaining_ttl_seconds,
+            )
 
     async def set(self, key: str, value: Any, ttl_seconds: float) -> None:
         """Store a JSON-serializable value under ``key``."""
