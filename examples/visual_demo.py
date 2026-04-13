@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from shipsy_cache import FactoryError, TieredCache
-from shipsy_cache.l2.base import L2Backend
+from shipsy_cache.l2.base import L2Backend, L2CacheEntry
 
 
 CARRIERS: Dict[str, Dict[str, float]] = {
@@ -70,8 +70,8 @@ class _VisualDemoL2(L2Backend):
         self._lock = asyncio.Lock()
         self._operations = 0
 
-    async def get(self, key: str) -> Optional[Any]:
-        """Return a fresh value or ``None`` when missing or expired."""
+    async def get_entry(self, key: str) -> Optional[L2CacheEntry]:
+        """Return a fresh value and remaining TTL for the demo backend."""
 
         self._operations += 1
         await self._apply_latency()
@@ -81,11 +81,19 @@ class _VisualDemoL2(L2Backend):
                 return None
 
             raw_value, expire_at = entry
-            if expire_at is not None and time.monotonic() >= expire_at:
+            now = time.monotonic()
+            if expire_at is not None and now >= expire_at:
                 self._store.pop(self._prefix(key), None)
                 return None
 
-            return json.loads(raw_value.decode("utf-8"))
+            remaining_ttl_seconds = None
+            if expire_at is not None:
+                remaining_ttl_seconds = expire_at - now
+
+            return L2CacheEntry(
+                value=json.loads(raw_value.decode("utf-8")),
+                remaining_ttl_seconds=remaining_ttl_seconds,
+            )
 
     async def set(self, key: str, value: Any, ttl_seconds: float) -> None:
         """Store a JSON-serializable value with TTL semantics."""
